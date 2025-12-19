@@ -57,7 +57,7 @@ app.layout = html.Div(
         dcc.Graph(
             'graph',
             config=dict(displayModeBar=False),
-            figure=dict(data=[go.Sankey()], layout=dict(paper_bgcolor=TRANSPARENT)),
+            figure=dict(data=[], layout=dict(paper_bgcolor=TRANSPARENT)),
             style=dict(
                 borderRadius='50px',
                 boxShadow='5px 5px 10px rgba(55, 94, 148, 0.2), -5px -5px 10px rgba(255, 255, 255, 0.4)',
@@ -198,72 +198,72 @@ def get_incomes(symbol):
             continue
 
 
-def create_sankey_frames(incomes: list[Income]):
-    incomes = incomes[-MAX_Q:]
-    max_r = max(e.r for e in incomes)
-    frames = [
-        go.Sankey(
-            hoverinfo='skip',
-            link=dict(
-                color=[
-                    TRANSPARENT,
-                    TRANSPARENT,
-                    LIGHT_RED,
-                    LIGHT_GREEN if income.gp > 0 else LIGHT_RED,
-                    LIGHT_RED,
-                    LIGHT_GREEN if income.oi > 0 else LIGHT_RED,
-                    LIGHT_RED,
-                    LIGHT_RED,
-                ],
-                source=[0, 1, 2, 2, 4, 4, 5, 5],
-                target=[1, 2, 3, 4, 5, 6, 7, 8],
-                value=[
-                    (abs(e) + 1) / 1e6
-                    for e in (
-                        max_r,
-                        income.r,
-                        income.cor,
-                        income.gp,
-                        income.oe,
-                        income.oi,
-                        income.rnd,
-                        income.sgna,
-                    )
-                ],
-            ),
-            name=income.d.strftime('%y-%m-%d'),
-            node=dict(
-                color=[
-                    TRANSPARENT,
-                    TRANSPARENT,
-                    DARK_GREEN,
-                    DARK_RED,
-                    DARK_GREEN if income.gp > 0 else DARK_RED,
-                    DARK_RED,
-                    DARK_GREEN if income.oi > 0 else DARK_RED,
-                    DARK_RED,
-                    DARK_RED,
-                ],
-                label=[
-                    '',
-                    '',
-                    f'Revenue: {income.r // 1e6:,.0f}M',
-                    f'Cost of Revenue: {income.cor // 1e6:,.0f}M',
-                    f'Gross Profit: {income.gp // 1e6:,.0f}M',
-                    f'Operating Expenses: {income.oe // 1e6:,.0f}M',
-                    f'Operating Income: {income.oi // 1e6:,.0f}M',
-                    f'R&D: {income.rnd // 1e6:,.0f}M',
-                    f'SG&A: {income.sgna // 1e6:,.0f}M',
-                ],
-                line={'width': 0},
-                x=[-0.67, -0.33, 0.01, 0.33, 0.33, 0.67, 0.67, 1.0, 1.0],
-                y=[0.64, 0.64, 0.64, 1.0, 0.29, 0.57, 0.01, 0.34, 0.8],
-            ),
-        )
-        for income in incomes + [incomes[-1]]
-    ]
-    frames[-1].name = 'Today'
-    return frames
+# def create_sankey_frames(incomes: list[Income]):
+#     incomes = incomes[-MAX_Q:]
+#     max_r = max(e.r for e in incomes)
+#     frames = [
+#         go.Sankey(
+#             hoverinfo='skip',
+#             link=dict(
+#                 color=[
+#                     TRANSPARENT,
+#                     TRANSPARENT,
+#                     LIGHT_RED,
+#                     LIGHT_GREEN if income.gp > 0 else LIGHT_RED,
+#                     LIGHT_RED,
+#                     LIGHT_GREEN if income.oi > 0 else LIGHT_RED,
+#                     LIGHT_RED,
+#                     LIGHT_RED,
+#                 ],
+#                 source=[0, 1, 2, 2, 4, 4, 5, 5],
+#                 target=[1, 2, 3, 4, 5, 6, 7, 8],
+#                 value=[
+#                     (abs(e) + 1) / 1e6
+#                     for e in (
+#                         max_r,
+#                         income.r,
+#                         income.cor,
+#                         income.gp,
+#                         income.oe,
+#                         income.oi,
+#                         income.rnd,
+#                         income.sgna,
+#                     )
+#                 ],
+#             ),
+#             name=income.d.strftime('%y-%m-%d'),
+#             node=dict(
+#                 color=[
+#                     TRANSPARENT,
+#                     TRANSPARENT,
+#                     DARK_GREEN,
+#                     DARK_RED,
+#                     DARK_GREEN if income.gp > 0 else DARK_RED,
+#                     DARK_RED,
+#                     DARK_GREEN if income.oi > 0 else DARK_RED,
+#                     DARK_RED,
+#                     DARK_RED,
+#                 ],
+#                 label=[
+#                     '',
+#                     '',
+#                     f'Revenue: {income.r // 1e6:,.0f}M',
+#                     f'Cost of Revenue: {income.cor // 1e6:,.0f}M',
+#                     f'Gross Profit: {income.gp // 1e6:,.0f}M',
+#                     f'Operating Expenses: {income.oe // 1e6:,.0f}M',
+#                     f'Operating Income: {income.oi // 1e6:,.0f}M',
+#                     f'R&D: {income.rnd // 1e6:,.0f}M',
+#                     f'SG&A: {income.sgna // 1e6:,.0f}M',
+#                 ],
+#                 line={'width': 0},
+#                 x=[-0.67, -0.33, 0.01, 0.33, 0.33, 0.67, 0.67, 1.0, 1.0],
+#                 y=[0.64, 0.64, 0.64, 1.0, 0.29, 0.57, 0.01, 0.34, 0.8],
+#             ),
+#         )
+#         for income in incomes + [incomes[-1]]
+#     ]
+#     frames[-1].name = 'Today'
+#     return frames
 
 
 def get_prices(symbol: str):
@@ -338,22 +338,43 @@ def create_price_frames_and_bands(symbol, incomes):
 )
 def main(symbol: str, n_clicks: int):
     if not (incomes := get_incomes(symbol)):
-        return go.Figure(go.Sankey(), go.Layout(paper_bgcolor=TRANSPARENT)), True
-    s_frames = create_sankey_frames(incomes)
+        return go.Figure(layout=go.Layout(paper_bgcolor=TRANSPARENT)), True
+    # s_frames = create_sankey_frames(incomes)
     p_frames, bands = create_price_frames_and_bands(symbol, incomes)
+    # fig = make_subplots(
+    #     2, 1, specs=[[{'type': 'sankey'}], [{'type': 'xy'}]], vertical_spacing=0.2
+    # )
     fig = make_subplots(
-        2, 1, specs=[[{'type': 'sankey'}], [{'type': 'xy'}]], vertical_spacing=0.2
+        1, 1, specs=[[{'type': 'xy'}]], vertical_spacing=0.2
     )
-    fig.add_trace(s_frames[-1], 1, 1)
-    fig.add_trace(p_frames[-1], 2, 1)
+    # fig.add_trace(s_frames[-1], 1, 1)
+    fig.add_trace(p_frames[-1], 1, 1)
     for band in bands:
-        fig.add_trace(band, 2, 1)
+        fig.add_trace(band, 1, 1)
         fig.add_annotation(
             showarrow=False, text=band.name + 'x', x=band.x[-1], y=band.y[-1]
         )
+    
+    # Generate names for p_frames if not present (since we used s_frames.name before)
+    # create_sankey_frames used incomes[-MAX_Q:] and added 'Today'.
+    # create_price_frames_and_bands aligns with the same dates.
+    # We need to reconstruct the names list that was on s_frames.
+    
+    incomes_sliced = incomes[-MAX_Q:]
+    frame_names = [i.d.strftime('%y-%m-%d') for i in incomes_sliced] + ['Today']
+    # But wait, create_sankey_frames does: for income in incomes + [incomes[-1]]
+    # It basically duplicated the last income for the 'Today' frame? No, checks create_sankey_frames:
+    # frames = [go.Sankey(...) for income in incomes + [incomes[-1]]]
+    # So it has len(incomes) + 1 frames.
+    # create_price_frames_and_bands: dates = [e.d for e in incomes[-MAX_Q:]] + [prices.index[-1]]
+    # It loops `for d in dates`. So it also has len(incomes) + 1 frames.
+    
+    for i, frame in enumerate(p_frames):
+         frame.name = frame_names[i]
+
     fig.frames = [
-        go.Frame(data=[s_frame, p_frame], name=s_frame.name)
-        for s_frame, p_frame in zip(s_frames, p_frames)
+        go.Frame(data=[p_frame], name=frame_names[i])
+        for i, p_frame in enumerate(p_frames)
     ]
     fig.update_layout(
         dict(
@@ -370,13 +391,13 @@ def main(symbol: str, n_clicks: int):
                     steps=[
                         dict(
                             args=[
-                                [s_frame.name],
+                                [frame_name],
                                 dict(mode='immediate', transition={'duration': 0}),
                             ],
-                            label=s_frame.name,
+                            label=frame_name,
                             method='animate',
                         )
-                        for s_frame in s_frames
+                        for frame_name in frame_names
                     ],
                     tickcolor=FONT_COLOR,
                     x=0.12,
