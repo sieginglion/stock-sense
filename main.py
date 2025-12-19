@@ -141,12 +141,14 @@ def get_incomes_from_fmp(symbol: str):
     eps = df['eps'].rolling(4).sum().loc[3:]
     df = df.loc[3:].reset_index(drop=True)
     d = pd.to_datetime(df['fillingDate']).dt.date
-    r = df['revenue']
-    cik = df.loc[0, 'cik']
-    gp = get_item_from_sec(cik, 'GrossProfit', d)
-    oi = get_item_from_sec(cik, 'OperatingIncomeLoss', d)
-    rnd = df['researchAndDevelopmentExpenses']
-    sgna = df['sellingGeneralAndAdministrativeExpenses']
+    # r = df['revenue']
+    # cik = df.loc[0, 'cik']
+    # gp = get_item_from_sec(cik, 'GrossProfit', d)
+    # oi = get_item_from_sec(cik, 'OperatingIncomeLoss', d)
+    # rnd = df['researchAndDevelopmentExpenses']
+    # sgna = df['sellingGeneralAndAdministrativeExpenses']
+    val = pd.Series([0] * len(d))
+    r = gp = oi = rnd = sgna = val
     return [Income(*_) for _ in zip(d, r, r - gp, gp, gp - oi, oi, rnd, sgna, eps)]
 
 
