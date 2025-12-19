@@ -61,7 +61,7 @@ app.layout = html.Div(
             style=dict(
                 borderRadius='50px',
                 boxShadow='5px 5px 10px rgba(55, 94, 148, 0.2), -5px -5px 10px rgba(255, 255, 255, 0.4)',
-                height='880px',
+                height='600px',
                 marginTop=MARGIN,
                 width='800px',
             ),
@@ -80,54 +80,54 @@ app.layout = html.Div(
 class NotSupported(Exception): ...
 
 
-def get_item_from_sec(cik: str, tag: str, filing_dates: pd.Series):
-    cmd = f'''
-    curl 'https://data.sec.gov/api/xbrl/companyconcept/CIK{cik}/us-gaap/{tag}.json' \
-    -H 'accept-language: en-US,en;q=0.9' \
-    -H 'cache-control: no-cache' \
-    -H 'user-agent: {USER_AGENT}' \
-    --compressed
-    '''
-    res = subprocess.run(cmd, capture_output=True, shell=True, text=True)
-    try:
-        data = json.loads(res.stdout)
-    except json.JSONDecodeError:
-        raise NotSupported
-    df = pd.DataFrame(data['units']['USD'])
-    df = df[df['form'].isin(['10-Q', '10-K']) & df['frame'].notna()].reset_index(
-        drop=True
-    )
-    for i in df[df['form'] == '10-K'].index:
-        if ((q := df.loc[i - 3 : i - 1])['form'] == '10-Q').sum() == 3:
-            df.at[i, 'val'] -= q['val'].sum()
-        else:
-            df = df.drop(i)
-
-    def find_filing_date(end_date: datetime.date):
-        result = filing_dates[
-            (end_date < filing_dates)
-            & (filing_dates < end_date + pd.Timedelta(days=91))
-        ]
-        return result.iloc[0] if len(result) else pd.NA
-
-    df['filing_date'] = pd.to_datetime(df['end']).dt.date.map(find_filing_date)
-    df = df.set_index('filing_date')
-    try:
-        s = df.loc[filing_dates, 'val']
-    except KeyError:
-        raise NotSupported
-    return s.reset_index(drop=True)
+# def get_item_from_sec(cik: str, tag: str, filing_dates: pd.Series):
+#     cmd = f'''
+#     curl 'https://data.sec.gov/api/xbrl/companyconcept/CIK{cik}/us-gaap/{tag}.json' \
+#     -H 'accept-language: en-US,en;q=0.9' \
+#     -H 'cache-control: no-cache' \
+#     -H 'user-agent: {USER_AGENT}' \
+#     --compressed
+#     '''
+#     res = subprocess.run(cmd, capture_output=True, shell=True, text=True)
+#     try:
+#         data = json.loads(res.stdout)
+#     except json.JSONDecodeError:
+#         raise NotSupported
+#     df = pd.DataFrame(data['units']['USD'])
+#     df = df[df['form'].isin(['10-Q', '10-K']) & df['frame'].notna()].reset_index(
+#         drop=True
+#     )
+#     for i in df[df['form'] == '10-K'].index:
+#         if ((q := df.loc[i - 3 : i - 1])['form'] == '10-Q').sum() == 3:
+#             df.at[i, 'val'] -= q['val'].sum()
+#         else:
+#             df = df.drop(i)
+# 
+#     def find_filing_date(end_date: datetime.date):
+#         result = filing_dates[
+#             (end_date < filing_dates)
+#             & (filing_dates < end_date + pd.Timedelta(days=91))
+#         ]
+#         return result.iloc[0] if len(result) else pd.NA
+# 
+#     df['filing_date'] = pd.to_datetime(df['end']).dt.date.map(find_filing_date)
+#     df = df.set_index('filing_date')
+#     try:
+#         s = df.loc[filing_dates, 'val']
+#     except KeyError:
+#         raise NotSupported
+#     return s.reset_index(drop=True)
 
 
 class Income(NamedTuple):
     d: datetime.date
-    r: int
-    cor: int
-    gp: int
-    oe: int
-    oi: int
-    rnd: int
-    sgna: int
+    # r: int
+    # cor: int
+    # gp: int
+    # oe: int
+    # oi: int
+    # rnd: int
+    # sgna: int
     eps: int
 
 
@@ -141,13 +141,14 @@ def get_incomes_from_fmp(symbol: str):
     eps = df['eps'].rolling(4).sum().loc[3:]
     df = df.loc[3:].reset_index(drop=True)
     d = pd.to_datetime(df['fillingDate']).dt.date
-    r = df['revenue']
-    cik = df.loc[0, 'cik']
-    gp = get_item_from_sec(cik, 'GrossProfit', d)
-    oi = get_item_from_sec(cik, 'OperatingIncomeLoss', d)
-    rnd = df['researchAndDevelopmentExpenses']
-    sgna = df['sellingGeneralAndAdministrativeExpenses']
-    return [Income(*_) for _ in zip(d, r, r - gp, gp, gp - oi, oi, rnd, sgna, eps)]
+    # r = df['revenue']
+    # cik = df.loc[0, 'cik']
+    # gp = get_item_from_sec(cik, 'GrossProfit', d)
+    # oi = get_item_from_sec(cik, 'OperatingIncomeLoss', d)
+    # rnd = df['researchAndDevelopmentExpenses']
+    # sgna = df['sellingGeneralAndAdministrativeExpenses']
+    # return [Income(*_) for _ in zip(d, r, r - gp, gp, gp - oi, oi, rnd, sgna, eps)]
+    return [Income(d, eps) for d, eps in zip(d, eps)]
 
 
 def get_incomes_from_dog(symbol: str):
@@ -172,16 +173,17 @@ def get_incomes_from_dog(symbol: str):
         except (KeyError, ValueError):
             raise NotSupported
 
-    r = extract('Revenue') * 1000
-    gp = extract('GrossProfit') * 1000
-    oi = extract('OperatingIncome') * 1000
-    rnd = extract('ResearchAndDevelopmentExpenses') * 1000
-    try:
-        sgna = extract('SellingAndAdministrativeExpenses') * 1000
-    except NotSupported:
-        sgna = extract('SellingExpenses') + extract('AdministrativeExpenses') * 1000
+    # r = extract('Revenue') * 1000
+    # gp = extract('GrossProfit') * 1000
+    # oi = extract('OperatingIncome') * 1000
+    # rnd = extract('ResearchAndDevelopmentExpenses') * 1000
+    # try:
+    #     sgna = extract('SellingAndAdministrativeExpenses') * 1000
+    # except NotSupported:
+    #     sgna = extract('SellingExpenses') + extract('AdministrativeExpenses') * 1000
     eps = extract('EPST4Q')
-    return [Income(*_) for _ in zip(d, r, r - gp, gp, gp - oi, oi, rnd, sgna, eps)]
+    # return [Income(*_) for _ in zip(d, r, r - gp, gp, gp - oi, oi, rnd, sgna, eps)]
+    return [Income(d, eps) for d, eps in zip(d, eps)]
 
 
 # @cached(43200)
