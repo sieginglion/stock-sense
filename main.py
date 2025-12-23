@@ -138,14 +138,13 @@ class Income(NamedTuple):
     eps: int
     rps: int
 
-class InsufficientQuarters(Exception): ...
 
 def get_incomes_from_fmp(symbol: str, max_q: int = MAX_Q):
     data = rq.get(
         f'https://financialmodelingprep.com/api/v3/income-statement/{symbol}?period=quarter&limit={max_q + 4}&apikey={FMP_KEY}'
     ).json()
     if len(data) != max_q + 4:
-        raise InsufficientQuarters
+        raise NotSupported
     df = pd.DataFrame(data[::-1])
 
     def get_series(col_name):
@@ -187,7 +186,7 @@ def get_incomes_from_finmind(symbol: str, max_q: int = MAX_Q):
     df = data.pivot(index='date', columns='type', values='value').reset_index()
     # We need at least MAX_Q + 4 records for rolling calcs
     if len(df) < max_q + 4:
-        raise InsufficientQuarters
+        raise NotSupported
     # Sort by date ascending to ensure calculations like rolling work correctly (Oldest -> Newest)
     df = df.sort_values('date', ascending=True).reset_index(drop=True)
     # Take the last MAX_Q + 4 records
