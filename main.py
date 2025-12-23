@@ -51,6 +51,12 @@ app.layout = html.Div(
                     placeholder='TSLA, 2330',
                     value='TSLA',
                 ),
+                dbc.Input(
+                    'max_q',
+                    dict(textAlign='center', width='70px', marginLeft='10px'),
+                    value=MAX_Q,
+                    type='number',
+                ),
                 dbc.Button('Plot', 'button', style=dict(marginLeft=MARGIN)),
             ],
             style=dict(display='flex', marginTop=MARGIN),
@@ -134,11 +140,11 @@ class Income(NamedTuple):
 
 class InsufficientQuarters(Exception): ...
 
-def get_incomes_from_fmp(symbol: str):
+def get_incomes_from_fmp(symbol: str, max_q: int = MAX_Q):
     data = rq.get(
-        f'https://financialmodelingprep.com/api/v3/income-statement/{symbol}?period=quarter&limit={MAX_Q + 4}&apikey={FMP_KEY}'
+        f'https://financialmodelingprep.com/api/v3/income-statement/{symbol}?period=quarter&limit={max_q + 4}&apikey={FMP_KEY}'
     ).json()
-    if len(data) != MAX_Q + 4:
+    if len(data) != max_q + 4:
         raise InsufficientQuarters
     df = pd.DataFrame(data[::-1])
 
@@ -169,22 +175,23 @@ def get_incomes_from_fmp(symbol: str):
     ]
 
 
-def get_incomes_from_finmind(symbol: str):
+def get_incomes_from_finmind(symbol: str, max_q: int = MAX_Q):
+    max_d = max_q * 91
     api = DataLoader()
     api.login_by_token(os.environ['FINMIND_KEY'])
     data = api.taiwan_stock_financial_statement(
         stock_id=symbol,
-        start_date=arrow.now().shift(days=-(MAX_D + 91 * 5)).format('YYYY-MM-DD'),
+        start_date=arrow.now().shift(days=-(max_d + 91 * 5)).format('YYYY-MM-DD'),
     )
     # Pivot to wide format
     df = data.pivot(index='date', columns='type', values='value').reset_index()
     # We need at least MAX_Q + 4 records for rolling calcs
-    if len(df) < MAX_Q + 4:
+    if len(df) < max_q + 4:
         raise InsufficientQuarters
     # Sort by date ascending to ensure calculations like rolling work correctly (Oldest -> Newest)
     df = df.sort_values('date', ascending=True).reset_index(drop=True)
     # Take the last MAX_Q + 4 records
-    df = df.tail(MAX_Q + 4).reset_index(drop=True)
+    df = df.tail(max_q + 4).reset_index(drop=True)
 
     def get_series(col_name):
         return df.get(col_name, pd.Series([0] * len(df)))
@@ -218,12 +225,12 @@ def get_incomes_from_finmind(symbol: str):
 
 
 # @cached(43200)
-def get_incomes(symbol):
-    return get_incomes_from_fmp(symbol) if symbol[0].isalpha() else get_incomes_from_finmind(symbol)
+def get_incomes(symbol, max_q: int = MAX_Q):
+    return get_incomes_from_fmp(symbol, max_q) if symbol[0].isalpha() else get_incomes_from_finmind(symbol, max_q)
 
 
-def create_sankey_frames(incomes: list[Income]):
-    incomes = incomes[-MAX_Q:]
+def create_sankey_frames(incomes: list[Income], max_q: int = MAX_Q):
+    incomes = incomes[-max_q:]
     max_r = max(e.r for e in incomes)
     frames = [
         go.Sankey(
@@ -290,10 +297,10 @@ def create_sankey_frames(incomes: list[Income]):
     return frames
 
 
-def get_prices(symbol: str):
+def get_prices(symbol: str, max_d: int = MAX_D):
     market = 'u' if symbol[0].isalpha() else 't'
     prices = rq.get(
-        f'http://52.198.155.160:8080/prices?market={market}&symbol={symbol}&n={MAX_D}'
+        f'http://52.198.155.160:8080/prices?market={market}&symbol={symbol}&n={max_d}'
     ).json()
     now = arrow.now('Etc/GMT+5' if market == 'u' else 'Asia/Taipei')
     dates = [
@@ -322,9 +329,9 @@ def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
     return bands
 
 
-def create_price_frames_and_bands(symbol, incomes):
-    prices = get_prices(symbol)
-    dates = [e.d for e in incomes[-MAX_Q:]] + [prices.index[-1]]
+def create_price_frames_and_bands(symbol, incomes, max_q: int = MAX_Q):
+    prices = get_prices(symbol, max_q * 91)
+    dates = [e.d for e in incomes[-max_q:]] + [prices.index[-1]]
     frames = [
         go.Scatter(
             hoverlabel=dict(
@@ -371,13 +378,14 @@ def create_price_frames_and_bands(symbol, incomes):
     Output('graph', 'figure'),
     Output('alert', 'displayed'),
     State('input', 'value'),
+    State('max_q', 'value'),
     Input('button', 'n_clicks'),
 )
-def main(symbol: str, n_clicks: int):
-    if not (incomes := get_incomes(symbol)):
+def main(symbol: str, max_q: int, n_clicks: int):
+    if not (incomes := get_incomes(symbol, max_q)):
         return go.Figure(go.Sankey(), go.Layout(paper_bgcolor=TRANSPARENT)), True
-    s_frames = create_sankey_frames(incomes)
-    p_frames, pe_bands, ps_bands = create_price_frames_and_bands(symbol, incomes)
+    s_frames = create_sankey_frames(incomes, max_q)
+    p_frames, pe_bands, ps_bands = create_price_frames_and_bands(symbol, incomes, max_q)
     fig = make_subplots(
         3,
         1,
