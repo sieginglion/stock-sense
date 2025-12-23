@@ -18,8 +18,6 @@ from plotly.subplots import make_subplots
 dotenv.load_dotenv()
 
 FMP_KEY = os.environ['FMP_KEY']
-MAX_Q = 4
-MAX_D = MAX_Q * 91
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
 
 MARGIN = '50px'
@@ -54,7 +52,7 @@ app.layout = html.Div(
                 dbc.Input(
                     'max_q',
                     dict(textAlign='center', width='70px', marginLeft='10px'),
-                    value=MAX_Q,
+                    value=4,
                     type='number',
                 ),
                 dbc.Button('Plot', 'button', style=dict(marginLeft=MARGIN)),
@@ -139,7 +137,7 @@ class Income(NamedTuple):
     rps: int
 
 
-def get_incomes_from_fmp(symbol: str, max_q: int = MAX_Q):
+def get_incomes_from_fmp(symbol: str, max_q: int):
     data = rq.get(
         f'https://financialmodelingprep.com/api/v3/income-statement/{symbol}?period=quarter&limit={max_q + 4}&apikey={FMP_KEY}'
     ).json()
@@ -174,7 +172,7 @@ def get_incomes_from_fmp(symbol: str, max_q: int = MAX_Q):
     ]
 
 
-def get_incomes_from_finmind(symbol: str, max_q: int = MAX_Q):
+def get_incomes_from_finmind(symbol: str, max_q: int):
     max_d = max_q * 91
     api = DataLoader()
     api.login_by_token(os.environ['FINMIND_KEY'])
@@ -224,11 +222,11 @@ def get_incomes_from_finmind(symbol: str, max_q: int = MAX_Q):
 
 
 # @cached(43200)
-def get_incomes(symbol, max_q: int = MAX_Q):
+def get_incomes(symbol, max_q: int):
     return get_incomes_from_fmp(symbol, max_q) if symbol[0].isalpha() else get_incomes_from_finmind(symbol, max_q)
 
 
-def create_sankey_frames(incomes: list[Income], max_q: int = MAX_Q):
+def create_sankey_frames(incomes: list[Income], max_q: int):
     incomes = incomes[-max_q:]
     max_r = max(e.r for e in incomes)
     frames = [
@@ -296,7 +294,7 @@ def create_sankey_frames(incomes: list[Income], max_q: int = MAX_Q):
     return frames
 
 
-def get_prices(symbol: str, max_d: int = MAX_D):
+def get_prices(symbol: str, max_d: int):
     market = 'u' if symbol[0].isalpha() else 't'
     prices = rq.get(
         f'http://52.198.155.160:8080/prices?market={market}&symbol={symbol}&n={max_d}'
@@ -328,7 +326,7 @@ def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
     return bands
 
 
-def create_price_frames_and_bands(symbol, incomes, max_q: int = MAX_Q):
+def create_price_frames_and_bands(symbol, incomes, max_q: int):
     prices = get_prices(symbol, max_q * 91)
     dates = [e.d for e in incomes[-max_q:]] + [prices.index[-1]]
     frames = [
