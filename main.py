@@ -11,13 +11,14 @@ import pandas as pd
 import requests as rq
 from dash import Dash, Input, Output, State, callback, dcc, html
 from general_cache import cached
+from FinMind.data import DataLoader
 from plotly import graph_objects as go
 from plotly.subplots import make_subplots
 
 dotenv.load_dotenv()
 
 FMP_KEY = os.environ['FMP_KEY']
-MAX_Q = 8
+MAX_Q = 4
 MAX_D = MAX_Q * 91
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
 
@@ -61,7 +62,7 @@ app.layout = html.Div(
             style=dict(
                 borderRadius='50px',
                 boxShadow='5px 5px 10px rgba(55, 94, 148, 0.2), -5px -5px 10px rgba(255, 255, 255, 0.4)',
-                height='880px',
+                height='1300px',
                 marginTop=MARGIN,
                 width='800px',
             ),
@@ -129,6 +130,7 @@ class Income(NamedTuple):
     rnd: int
     sgna: int
     eps: int
+    rps: int
 
 
 def get_incomes_from_fmp(symbol: str):
@@ -138,66 +140,85 @@ def get_incomes_from_fmp(symbol: str):
     if len(data) != MAX_Q + 4:
         raise NotSupported
     df = pd.DataFrame(data[::-1])
-    eps = df['eps'].rolling(4).sum().loc[3:]
-    df = df.loc[3:].reset_index(drop=True)
+
+    def get_series(col_name):
+        return df.get(col_name, pd.Series([0] * len(df)))
+
+    r_raw = get_series('revenue')
+    eps_raw = get_series('epsdiluted')
+    shares = get_series('weightedAverageShsOutDil')
+
+    df['eps_ttm'] = eps_raw.rolling(4).sum()
+    df['rps_ttm'] = (r_raw / shares).rolling(4).sum()
+
+    df = df.iloc[3:].reset_index(drop=True)
+
     d = pd.to_datetime(df['fillingDate']).dt.date
-    # r = df['revenue']
-    # cik = df.loc[0, 'cik']
-    # gp = get_item_from_sec(cik, 'GrossProfit', d)
-    # oi = get_item_from_sec(cik, 'OperatingIncomeLoss', d)
-    # rnd = df['researchAndDevelopmentExpenses']
-    # sgna = df['sellingGeneralAndAdministrativeExpenses']
-    val = pd.Series([0] * len(d))
-    r = gp = oi = rnd = sgna = val
-    return [Income(*_) for _ in zip(d, r, r - gp, gp, gp - oi, oi, rnd, sgna, eps)]
+    r = get_series('revenue')
+    gp = get_series('grossProfit')
+    oi = get_series('operatingIncome')
+    rnd = get_series('researchAndDevelopmentExpenses')
+    sgna = get_series('sellingGeneralAndAdministrativeExpenses')
+    eps_ttm = get_series('eps_ttm')
+    rps_ttm = get_series('rps_ttm')
+    
+    return [
+        Income(*_)
+        for _ in zip(d, r, r - gp, gp, gp - oi, oi, rnd, sgna, eps_ttm, rps_ttm)
+    ]
 
 
-def get_incomes_from_dog(symbol: str):
-    end = arrow.now('Asia/Taipei')
-    data = rq.get(
-        f'https://statementdog.com/api/v2/fundamentals/{symbol}/{end.shift(days=-(MAX_Q + 4) * 91).year}/{end.year}',
-        headers={'User-Agent': USER_AGENT},
-    ).json()
-    if len(data['common']['TimeCalendarQ']['data']) < MAX_Q + 4:
+def get_incomes_from_finmind(symbol: str):
+    api = DataLoader()
+    api.login_by_token(os.environ['FINMIND_KEY'])
+    data = api.taiwan_stock_financial_statement(
+        stock_id=symbol,
+        start_date=arrow.now().shift(days=-(MAX_D + 91 * 5)).format('YYYY-MM-DD'),
+    )
+    # Pivot to wide format
+    df = data.pivot(index='date', columns='type', values='value').reset_index()
+    # We need at least MAX_Q + 4 records for rolling calcs
+    if len(df) < MAX_Q + 4:
         raise NotSupported
-    fmp_data = rq.get(
-        f'https://financialmodelingprep.com/api/v3/income-statement/{symbol}?period=quarter&limit={MAX_Q + 1}&apikey={FMP_KEY}'
-    ).json()
-    fmp_df = pd.DataFrame(fmp_data[::-1])
-    d = pd.to_datetime(fmp_df['fillingDate']).dt.date
+    # Sort by date ascending to ensure calculations like rolling work correctly (Oldest -> Newest)
+    df = df.sort_values('date', ascending=True).reset_index(drop=True)
+    # Take the last MAX_Q + 4 records
+    df = df.tail(MAX_Q + 4).reset_index(drop=True)
 
-    def extract(item):
-        try:
-            return pd.Series(
-                [float(e) for i, e in data['quarterly'][item]['data'][-(MAX_Q + 1) :]]
-            )
-        except (KeyError, ValueError):
-            raise NotSupported
+    def get_series(col_name):
+        return df.get(col_name, pd.Series([0] * len(df)))
 
-    r = extract('Revenue') * 1000
-    gp = extract('GrossProfit') * 1000
-    oi = extract('OperatingIncome') * 1000
-    rnd = extract('ResearchAndDevelopmentExpenses') * 1000
-    try:
-        sgna = extract('SellingAndAdministrativeExpenses') * 1000
-    except NotSupported:
-        sgna = extract('SellingExpenses') + extract('AdministrativeExpenses') * 1000
-    eps = extract('EPST4Q')
-    return [Income(*_) for _ in zip(d, r, r - gp, gp, gp - oi, oi, rnd, sgna, eps)]
+    # 1. Calc rolling metrics (TTM) using full history
+    r_raw = get_series('Revenue')
+    eps_raw = get_series('EPS')
+    net_income = get_series('EquityAttributableToOwnersOfParent')
+    
+    shares = net_income / eps_raw
+    df['eps_ttm'] = eps_raw.rolling(4).sum()
+    df['rps_ttm'] = (r_raw / shares).rolling(4).sum()
+
+    # 2. Slice to remove the first 3 quarters (used for rolling warm-up)
+    df = df.iloc[3:].reset_index(drop=True)
+
+    # 3. Get quarterly series for the remaining valid range
+    d = pd.to_datetime(df['date']).dt.date
+    r = get_series('Revenue')
+    gp = get_series('GrossProfit')
+    oi = get_series('OperatingIncome') 
+    rnd = get_series(None) 
+    sgna = get_series(None)
+    eps_ttm = get_series('eps_ttm')
+    rps_ttm = get_series('rps_ttm')
+
+    return [
+        Income(*_)
+        for _ in zip(d, r, r - gp, gp, gp - oi, oi, rnd, sgna, eps_ttm, rps_ttm)
+    ]
 
 
 # @cached(43200)
 def get_incomes(symbol):
-    funcs = (
-        [get_incomes_from_fmp, get_incomes_from_dog]
-        if symbol[0].isalpha()
-        else [get_incomes_from_dog]
-    )
-    for func in funcs:
-        try:
-            return func(symbol)
-        except NotSupported:
-            continue
+    return get_incomes_from_fmp(symbol) if symbol[0].isalpha() else get_incomes_from_finmind(symbol)
 
 
 def create_sankey_frames(incomes: list[Income]):
@@ -281,22 +302,22 @@ def get_prices(symbol: str):
     return pd.Series(prices, dates)
 
 
-def calc_bands(incomes: list[Income], prices: pd.Series):
+def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
     dates = [e.date() for e in pd.date_range(incomes[0].d, prices.index[-1])]
-    eps = (
-        pd.Series({income.d: income.eps for income in incomes}, dates)
+    s = (
+        pd.Series({income.d: getattr(income, metric) for income in incomes}, dates)
         .ffill()
-        .tail(MAX_D)
+        .tail(len(prices))
     )
-    eps[eps <= 0] = None
-    PE = prices / eps
-    min_pe, max_pe = PE.min(), PE.max()
-    if not min_pe < max_pe:
-        return pd.DataFrame()
-    bands = pd.DataFrame(index=eps.index)
+    s[s <= 0] = None
+    multiples = prices / s
+    min_m, max_m = multiples.quantile(0.02), multiples.quantile(0.98)
+    # if not min_m < max_m:
+    #     return pd.DataFrame()
+    bands = pd.DataFrame(index=s.index)
     for p in range(0, 120, 20):
-        pe = min_pe + (max_pe - min_pe) * (p / 100)
-        bands[pe] = eps * pe
+        m = min_m + (max_m - min_m) * (p / 100)
+        bands[m] = s * m
     return bands
 
 
@@ -316,20 +337,33 @@ def create_price_frames_and_bands(symbol, incomes):
         )
         for d in dates
     ]
-    band_df = calc_bands(incomes, prices).fillna(0)
-    bands = [
+    pe_df = calc_bands(incomes, prices, 'eps').fillna(0)
+    pe_bands = [
         go.Scatter(
             fill='tonexty' if i else None,
             hoverinfo='skip',
             line=dict(color=BAND_COLORS[i], width=0),
             mode='lines',
-            name=round(pe),
-            x=band_df.index,
+            name=f'{round(m)}x',
+            x=pe_df.index,
             y=band,
         )
-        for i, (pe, band) in enumerate(band_df.items())
+        for i, (m, band) in enumerate(pe_df.items())
     ]
-    return frames, bands
+    ps_df = calc_bands(incomes, prices, 'rps').fillna(0)
+    ps_bands = [
+        go.Scatter(
+            fill='tonexty' if i else None,
+            hoverinfo='skip',
+            line=dict(color=BAND_COLORS[i], width=0),
+            mode='lines',
+            name=f'{round(m, 1)}x',
+            x=ps_df.index,
+            y=band,
+        )
+        for i, (m, band) in enumerate(ps_df.items())
+    ]
+    return frames, pe_bands, ps_bands
 
 
 @callback(
@@ -342,19 +376,38 @@ def main(symbol: str, n_clicks: int):
     if not (incomes := get_incomes(symbol)):
         return go.Figure(go.Sankey(), go.Layout(paper_bgcolor=TRANSPARENT)), True
     s_frames = create_sankey_frames(incomes)
-    p_frames, bands = create_price_frames_and_bands(symbol, incomes)
+    p_frames, pe_bands, ps_bands = create_price_frames_and_bands(symbol, incomes)
     fig = make_subplots(
-        2, 1, specs=[[{'type': 'sankey'}], [{'type': 'xy'}]], vertical_spacing=0.2
+        3,
+        1,
+        specs=[[{'type': 'sankey'}], [{'type': 'xy'}], [{'type': 'xy'}]],
+        vertical_spacing=0.1,
     )
     fig.add_trace(s_frames[-1], 1, 1)
     fig.add_trace(p_frames[-1], 2, 1)
-    for band in bands:
+    fig.add_trace(p_frames[-1], 3, 1)
+    for band in pe_bands:
         fig.add_trace(band, 2, 1)
         fig.add_annotation(
-            showarrow=False, text=band.name + 'x', x=band.x[-1], y=band.y[-1]
+            showarrow=False,
+            text=band.name,
+            x=band.x[-1],
+            y=band.y[-1],
+            row=2,
+            col=1,
+        )
+    for band in ps_bands:
+        fig.add_trace(band, 3, 1)
+        fig.add_annotation(
+            showarrow=False,
+            text=band.name,
+            x=band.x[-1],
+            y=band.y[-1],
+            row=3,
+            col=1,
         )
     fig.frames = [
-        go.Frame(data=[s_frame, p_frame], name=s_frame.name)
+        go.Frame(data=[s_frame, p_frame, p_frame], name=s_frame.name)
         for s_frame, p_frame in zip(s_frames, p_frames)
     ]
     fig.update_layout(
