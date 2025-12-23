@@ -132,13 +132,14 @@ class Income(NamedTuple):
     eps: int
     rps: int
 
+class InsufficientQuarters(Exception): ...
 
 def get_incomes_from_fmp(symbol: str):
     data = rq.get(
         f'https://financialmodelingprep.com/api/v3/income-statement/{symbol}?period=quarter&limit={MAX_Q + 4}&apikey={FMP_KEY}'
     ).json()
     if len(data) != MAX_Q + 4:
-        raise NotSupported
+        raise InsufficientQuarters
     df = pd.DataFrame(data[::-1])
 
     def get_series(col_name):
@@ -179,7 +180,7 @@ def get_incomes_from_finmind(symbol: str):
     df = data.pivot(index='date', columns='type', values='value').reset_index()
     # We need at least MAX_Q + 4 records for rolling calcs
     if len(df) < MAX_Q + 4:
-        raise NotSupported
+        raise InsufficientQuarters
     # Sort by date ascending to ensure calculations like rolling work correctly (Oldest -> Newest)
     df = df.sort_values('date', ascending=True).reset_index(drop=True)
     # Take the last MAX_Q + 4 records
@@ -303,7 +304,7 @@ def get_prices(symbol: str):
 
 
 def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
-    dates = [e.date() for e in pd.date_range(incomes[0].d, prices.index[-1])]
+    dates = pd.date_range(incomes[0].d, prices.index[-1]).date
     s = (
         pd.Series({income.d: getattr(income, metric) for income in incomes}, dates)
         .ffill()
@@ -312,9 +313,9 @@ def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
     s[s <= 0] = None
     multiples = prices / s
     min_m, max_m = multiples.quantile(0.02), multiples.quantile(0.98)
-    # if not min_m < max_m:
-    #     return pd.DataFrame()
     bands = pd.DataFrame(index=s.index)
+    if not min_m < max_m:
+        return bands
     for p in range(0, 120, 20):
         m = min_m + (max_m - min_m) * (p / 100)
         bands[m] = s * m
