@@ -45,17 +45,17 @@ app.layout = html.Div(
             [
                 dbc.Input(
                     'input',
-                    dict(textAlign='center', width='140px'),
+                    dict(textAlign='center', width='140px', marginRight=MARGIN),
                     placeholder='TSLA, 2330',
                     value='TSLA',
                 ),
                 dbc.Input(
                     'max_q',
-                    dict(textAlign='center', width='70px', marginLeft='10px'),
+                    dict(textAlign='center', width='70px', marginRight=MARGIN),
                     value=4,
                     type='number',
                 ),
-                dbc.Button('Plot', 'button', style=dict(marginLeft=MARGIN)),
+                dbc.Button('Plot', 'button'),
             ],
             style=dict(display='flex', marginTop=MARGIN),
         ),
@@ -173,12 +173,11 @@ def get_incomes_from_fmp(symbol: str, max_q: int):
 
 
 def get_incomes_from_finmind(symbol: str, max_q: int):
-    max_d = max_q * 91
     api = DataLoader()
     api.login_by_token(os.environ['FINMIND_KEY'])
     data = api.taiwan_stock_financial_statement(
         stock_id=symbol,
-        start_date=arrow.now().shift(days=-(max_d + 91 * 5)).format('YYYY-MM-DD'),
+        start_date=arrow.now().shift(days=-((max_q + 5) * 91)).format('YYYY-MM-DD'),
     )
     # Pivot to wide format
     df = data.pivot(index='date', columns='type', values='value').reset_index()
@@ -210,7 +209,7 @@ def get_incomes_from_finmind(symbol: str, max_q: int):
     r = get_series('Revenue')
     gp = get_series('GrossProfit')
     oi = get_series('OperatingIncome') 
-    rnd = get_series(None) 
+    rnd = get_series(None)
     sgna = get_series(None)
     eps_ttm = get_series('eps_ttm')
     rps_ttm = get_series('rps_ttm')
@@ -223,7 +222,7 @@ def get_incomes_from_finmind(symbol: str, max_q: int):
 
 # @cached(43200)
 def get_incomes(symbol, max_q: int):
-    return get_incomes_from_fmp(symbol, max_q) if symbol[0].isalpha() else get_incomes_from_finmind(symbol, max_q)
+    return (get_incomes_from_finmind if symbol[0].isdecimal() else get_incomes_from_fmp)(symbol, max_q)
 
 
 def create_sankey_frames(incomes: list[Income], max_q: int):
@@ -294,10 +293,10 @@ def create_sankey_frames(incomes: list[Income], max_q: int):
     return frames
 
 
-def get_prices(symbol: str, max_d: int):
+def get_prices(symbol: str, max_q: int):
     market = 'u' if symbol[0].isalpha() else 't'
     prices = rq.get(
-        f'http://52.198.155.160:8080/prices?market={market}&symbol={symbol}&n={max_d}'
+        f'http://52.198.155.160:8080/prices?market={market}&symbol={symbol}&n={max_q * 91}'
     ).json()
     now = arrow.now('Etc/GMT+5' if market == 'u' else 'Asia/Taipei')
     dates = [
@@ -327,7 +326,7 @@ def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
 
 
 def create_price_frames_and_bands(symbol, incomes, max_q: int):
-    prices = get_prices(symbol, max_q * 91)
+    prices = get_prices(symbol, max_q)
     dates = [e.d for e in incomes[-max_q:]] + [prices.index[-1]]
     frames = [
         go.Scatter(
@@ -349,7 +348,7 @@ def create_price_frames_and_bands(symbol, incomes, max_q: int):
             hoverinfo='skip',
             line=dict(color=BAND_COLORS[i], width=0),
             mode='lines',
-            name=f'{round(m)}x',
+            name=round(m),
             x=pe_df.index,
             y=band,
         )
@@ -362,7 +361,7 @@ def create_price_frames_and_bands(symbol, incomes, max_q: int):
             hoverinfo='skip',
             line=dict(color=BAND_COLORS[i], width=0),
             mode='lines',
-            name=f'{round(m, 1)}x',
+            name=round(m),
             x=ps_df.index,
             y=band,
         )
@@ -396,7 +395,7 @@ def main(symbol: str, max_q: int, n_clicks: int):
         fig.add_trace(band, 2, 1)
         fig.add_annotation(
             showarrow=False,
-            text=band.name,
+            text=band.name + 'x',
             x=band.x[-1],
             y=band.y[-1],
             row=2,
@@ -406,7 +405,7 @@ def main(symbol: str, max_q: int, n_clicks: int):
         fig.add_trace(band, 3, 1)
         fig.add_annotation(
             showarrow=False,
-            text=band.name,
+            text=band.name + 'x',
             x=band.x[-1],
             y=band.y[-1],
             row=3,
@@ -474,8 +473,10 @@ def main(symbol: str, max_q: int, n_clicks: int):
                     y=-0.02,
                 )
             ],
-            xaxis=dict(showgrid=False, visible=False),
-            yaxis=dict(showgrid=False, visible=False),
+            xaxis1=dict(showgrid=False, visible=False),
+            yaxis1=dict(showgrid=False, visible=False),
+            xaxis2=dict(showgrid=False, visible=False),
+            yaxis2=dict(showgrid=False, visible=False),
         )
     )
     return fig, False
