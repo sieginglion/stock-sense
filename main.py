@@ -2,7 +2,7 @@ import datetime
 import json
 import os
 import subprocess
-from typing import NamedTuple
+from typing import NamedTuple, Literal
 
 import arrow
 import dash_bootstrap_components as dbc
