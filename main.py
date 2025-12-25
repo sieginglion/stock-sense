@@ -141,9 +141,9 @@ def get_incomes_from_fmp(symbol: str, max_q: int):
     data = rq.get(
         f'https://financialmodelingprep.com/api/v3/income-statement/{symbol}?period=quarter&limit={max_q + 4}&apikey={FMP_KEY}'
     ).json()
-    if len(data) != max_q + 4:
+    if len(data) < 4:
         raise NotSupported
-    df = pd.DataFrame(data[::-1])
+    df = pd.DataFrame(data).sort_values('fillingDate').reset_index(drop=True)
 
     def get_series(col_name):
         return df.get(col_name, pd.Series([0] * len(df)))
@@ -175,19 +175,17 @@ def get_incomes_from_fmp(symbol: str, max_q: int):
 def get_incomes_from_finmind(symbol: str, max_q: int):
     api = DataLoader()
     api.login_by_token(os.environ['FINMIND_KEY'])
-    data = api.taiwan_stock_financial_statement(
+    df = api.taiwan_stock_financial_statement(
         stock_id=symbol,
-        start_date=arrow.now().shift(days=-((max_q + 5) * 91)).format('YYYY-MM-DD'),
+        start_date=arrow.now('Asia/Taipei').shift(days=-((max_q + 4) * 91 + 30)).format('YYYY-MM-DD'),
     )
     # Pivot to wide format
-    df = data.pivot(index='date', columns='type', values='value').reset_index()
+    df = df.pivot(index='date', columns='type', values='value').reset_index()
     # We need at least MAX_Q + 4 records for rolling calcs
-    if len(df) < max_q + 4:
+    if len(df) < 4:
         raise NotSupported
     # Sort by date ascending to ensure calculations like rolling work correctly (Oldest -> Newest)
-    df = df.sort_values('date', ascending=True).reset_index(drop=True)
-    # Take the last MAX_Q + 4 records
-    df = df.tail(max_q + 4).reset_index(drop=True)
+    df = df.sort_values('date').reset_index(drop=True)
 
     def get_series(col_name):
         return df.get(col_name, pd.Series([0] * len(df)))
@@ -220,9 +218,91 @@ def get_incomes_from_finmind(symbol: str, max_q: int):
     ]
 
 
+def get_incomes_from_tokenterminal(symbol: str, max_q: int):
+    slug = {
+        'AAVE': 'aave',
+        'ETH': 'ethereum',
+        'UNI': 'uniswap',
+    }[symbol[:-2]]
+    url = 'https://api.tokenterminal.com/trpc/projects.getFinancialStatement'
+    params = {'batch': '1', 'input': json.dumps({'0': {'project_slug': slug, 'granularity': 'month'}})}
+    headers = {
+        'accept': '*/*',
+        'accept-language': 'en-US,en;q=0.9',
+        'authorization': 'Bearer c0e5035a-64f6-4d2c-b5f6-ac1d1cb3da2f',
+        'cache-control': 'no-cache',
+        'content-type': 'application/json',
+        'origin': 'https://tokenterminal.com',
+        'pragma': 'no-cache',
+        'priority': 'u=1, i',
+        'referer': f'https://tokenterminal.com/explorer/projects/{slug}/financial-statement',
+        'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"macOS"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-site',
+        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+        'x-app-path': f'/explorer/projects/{slug}/financial-statement',
+        'x-tt-terminal-jwt': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcm9udEVuZCI6InRlcm1pbmFsIGRhc2hib2FyZCIsImlhdCI6MTc2NjUzNjU1MCwiZXhwIjoxNzY3NzQ2MTUwfQ.OzHHP4v66yYrUMoNrcQwU9rcausdKce4zQgzvjZnhIw',
+        'Cookie': '_ga=GA1.1.46309005.1766620105; _fbp=fb.1.1766620105447.33106851716235377; _gcl_au=1.1.2143769807.1766620106; intercom-id-p3bihfmm=f7640d7e-5b8d-4587-b06c-aa6f1c339bac; intercom-session-p3bihfmm=; intercom-device-id-p3bihfmm=dc4b28d8-a76b-4f46-ab88-0c17c25b10ba; _ga_TJ9TEYJ3GF=GS2.1.s1766623564$o2$g0$t1766623577$j47$l0$h0; ph_phc_amGyrGA1TpwJYYk2zNff9qfQkFBzu4uFghOgP6DjqIj_posthog=%7B%22distinct_id%22%3A%22019b52c3-8a21-7ddb-80d3-6705de899e5b%22%2C%22%24sesid%22%3A%5B1766623583834%2C%22019b52f8-41a6-7a9b-b61d-86aee0bb2210%22%2C1766623560100%5D%2C%22%24initial_person_info%22%3A%7B%22r%22%3A%22%24direct%22%2C%22u%22%3A%22https%3A%2F%2Ftokenterminal.com%2Fexplorer%2Fprojects%2Faave%2Ffinancial-statement%22%7D%7D',
+    }
+    
+    response = rq.get(url, params=params, headers=headers)
+    df = pd.DataFrame(response.json()[0]['result']['data'])
+    
+    # Pivot
+    df = df.pivot(index='timestamp', columns='metric_id', values='value').reset_index()
+    
+    # Convert timestamp
+    df['date'] = pd.to_datetime(df['timestamp'])
+    current_month_start = arrow.now('UTC').floor('month').datetime
+    df = df[df['date'] < current_month_start]
+    if len(df) < 12:
+        raise NotSupported
+    
+    # Sort
+    df = df.sort_values('date').reset_index(drop=True)
+    
+    def get_series(col_name):
+        return df.get(col_name, pd.Series([0] * len(df)))
+
+    r_raw = get_series('revenue')
+    earnings = get_series('earnings')
+    supply = get_series('token_supply_circulating')
+
+    # Rolling TTM (12 months)
+    r_ttm = r_raw.rolling(12).sum()
+    earnings_ttm = earnings.rolling(12).sum()
+
+    df['eps_ttm'] = earnings_ttm / supply
+    df['rps_ttm'] = r_ttm / supply
+
+    # Slice to requested max_q (months in this case)
+    # We need to make sure we have valid TTM data, so we drop the first 11 points
+
+    d = (pd.to_datetime(df['date']) + pd.DateOffset(months=1)).dt.date
+    r = get_series('revenue')
+    eps_ttm = get_series('eps_ttm')
+    rps_ttm = get_series('rps_ttm')
+    
+    # Fill zeros for ignored fields
+    zeros = pd.Series([0] * len(df))
+
+    return [
+        Income(*_)
+        for _ in zip(d, r, zeros, zeros, zeros, zeros, zeros, zeros, eps_ttm, rps_ttm)
+    ]
+
+
 # @cached(43200)
-def get_incomes(symbol, max_q: int):
-    return (get_incomes_from_finmind if symbol[0].isdecimal() else get_incomes_from_fmp)(symbol, max_q)
+def get_incomes(market: Literal['c', 't', 'u'], symbol: str, max_q: int):
+    fetcher = (
+        get_incomes_from_tokenterminal if market == 'c' else
+        get_incomes_from_finmind if market == 't' else
+        get_incomes_from_fmp
+    )
+    return fetcher(symbol, max_q)
 
 
 def create_sankey_frames(incomes: list[Income], max_q: int):
@@ -293,12 +373,16 @@ def create_sankey_frames(incomes: list[Income], max_q: int):
     return frames
 
 
-def get_prices(symbol: str, max_q: int):
-    market = 'u' if symbol[0].isalpha() else 't'
+def get_prices(market: Literal['c', 't', 'u'], symbol: str, max_q: int):
     prices = rq.get(
         f'http://52.198.155.160:8080/prices?market={market}&symbol={symbol}&n={max_q * 91}'
     ).json()
-    now = arrow.now('Etc/GMT+5' if market == 'u' else 'Asia/Taipei')
+    tz = (
+        'UTC' if market == 'c' else
+        'Asia/Taipei' if market == 't' else
+        'America/New_York'
+    )
+    now = arrow.now(tz)
     dates = [
         e.date()
         for e in pd.date_range(now.shift(days=-(len(prices) - 1)).date(), now.date())
@@ -325,8 +409,8 @@ def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
     return bands
 
 
-def create_price_frames_and_bands(symbol, incomes, max_q: int):
-    prices = get_prices(symbol, max_q)
+def create_price_frames_and_bands(market: Literal['c', 't', 'u'], symbol, incomes, max_q: int):
+    prices = get_prices(market, symbol, max_q)
     dates = [e.d for e in incomes[-max_q:]] + [prices.index[-1]]
     frames = [
         go.Scatter(
@@ -378,10 +462,17 @@ def create_price_frames_and_bands(symbol, incomes, max_q: int):
     Input('button', 'n_clicks'),
 )
 def main(symbol: str, max_q: int, n_clicks: int):
-    if not (incomes := get_incomes(symbol, max_q)):
+    market = (
+        'c' if symbol.endswith('.c') else
+        't' if symbol[0].isdigit() else
+        'u'
+    )
+    if market == 'c':
+        symbol = symbol[:-2]
+    if not (incomes := get_incomes(market, symbol, max_q)):
         return go.Figure(go.Sankey(), go.Layout(paper_bgcolor=TRANSPARENT)), True
     s_frames = create_sankey_frames(incomes, max_q)
-    p_frames, pe_bands, ps_bands = create_price_frames_and_bands(symbol, incomes, max_q)
+    p_frames, pe_bands, ps_bands = create_price_frames_and_bands(market, symbol, incomes, max_q)
     fig = make_subplots(
         3,
         1,
