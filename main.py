@@ -2,7 +2,7 @@ import datetime
 import json
 import os
 import subprocess
-from typing import NamedTuple
+from typing import NamedTuple, Literal
 
 import arrow
 import dash_bootstrap_components as dbc
@@ -11,14 +11,13 @@ import pandas as pd
 import requests as rq
 from dash import Dash, Input, Output, State, callback, dcc, html
 from general_cache import cached
+from FinMind.data import DataLoader
 from plotly import graph_objects as go
 from plotly.subplots import make_subplots
 
 dotenv.load_dotenv()
 
 FMP_KEY = os.environ['FMP_KEY']
-MAX_Q = 8
-MAX_D = MAX_Q * 91
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
 
 MARGIN = '50px'
@@ -46,11 +45,17 @@ app.layout = html.Div(
             [
                 dbc.Input(
                     'input',
-                    dict(textAlign='center', width='140px'),
+                    dict(textAlign='center', width='140px', marginRight=MARGIN),
                     placeholder='TSLA, 2330',
                     value='TSLA',
                 ),
-                dbc.Button('Plot', 'button', style=dict(marginLeft=MARGIN)),
+                dbc.Input(
+                    'max_q',
+                    dict(textAlign='center', width='70px', marginRight=MARGIN),
+                    value=4,
+                    type='number',
+                ),
+                dbc.Button('Plot', 'button'),
             ],
             style=dict(display='flex', marginTop=MARGIN),
         ),
@@ -61,7 +66,7 @@ app.layout = html.Div(
             style=dict(
                 borderRadius='50px',
                 boxShadow='5px 5px 10px rgba(55, 94, 148, 0.2), -5px -5px 10px rgba(255, 255, 255, 0.4)',
-                height='880px',
+                height='1300px',
                 marginTop=MARGIN,
                 width='800px',
             ),
@@ -129,77 +134,179 @@ class Income(NamedTuple):
     rnd: int
     sgna: int
     eps: int
+    rps: int
 
 
-def get_incomes_from_fmp(symbol: str):
+def get_incomes_from_fmp(symbol: str, max_q: int):
     data = rq.get(
-        f'https://financialmodelingprep.com/api/v3/income-statement/{symbol}?period=quarter&limit={MAX_Q + 4}&apikey={FMP_KEY}'
+        f'https://financialmodelingprep.com/api/v3/income-statement/{symbol}?period=quarter&limit={max_q + 4}&apikey={FMP_KEY}'
     ).json()
-    if len(data) != MAX_Q + 4:
+    if len(data) < 4:
         raise NotSupported
-    df = pd.DataFrame(data[::-1])
-    eps = df['eps'].rolling(4).sum().loc[3:]
-    df = df.loc[3:].reset_index(drop=True)
+    df = pd.DataFrame(data).sort_values('fillingDate').reset_index(drop=True)
+
+    def get_series(col_name):
+        return df.get(col_name, pd.Series([0] * len(df)))
+
+    r_raw = get_series('revenue')
+    eps_raw = get_series('epsdiluted')
+    shares = get_series('weightedAverageShsOutDil')
+
+    df['eps_ttm'] = eps_raw.rolling(4).sum()
+    df['rps_ttm'] = (r_raw / shares).rolling(4).sum()
+
+    df = df.iloc[3:].reset_index(drop=True)
+
     d = pd.to_datetime(df['fillingDate']).dt.date
-    r = df['revenue']
-    cik = df.loc[0, 'cik']
-    gp = get_item_from_sec(cik, 'GrossProfit', d)
-    oi = get_item_from_sec(cik, 'OperatingIncomeLoss', d)
-    rnd = df['researchAndDevelopmentExpenses']
-    sgna = df['sellingGeneralAndAdministrativeExpenses']
-    return [Income(*_) for _ in zip(d, r, r - gp, gp, gp - oi, oi, rnd, sgna, eps)]
+    r = get_series('revenue')
+    gp = get_series('grossProfit')
+    oi = get_series('operatingIncome')
+    rnd = get_series('researchAndDevelopmentExpenses')
+    sgna = get_series('sellingGeneralAndAdministrativeExpenses')
+    eps_ttm = get_series('eps_ttm')
+    rps_ttm = get_series('rps_ttm')
+    
+    return [
+        Income(*_)
+        for _ in zip(d, r, r - gp, gp, gp - oi, oi, rnd, sgna, eps_ttm, rps_ttm)
+    ]
 
 
-def get_incomes_from_dog(symbol: str):
-    end = arrow.now('Asia/Taipei')
-    data = rq.get(
-        f'https://statementdog.com/api/v2/fundamentals/{symbol}/{end.shift(days=-(MAX_Q + 4) * 91).year}/{end.year}',
-        headers={'User-Agent': USER_AGENT},
-    ).json()
-    if len(data['common']['TimeCalendarQ']['data']) < MAX_Q + 4:
+def get_incomes_from_finmind(symbol: str, max_q: int):
+    api = DataLoader()
+    api.login_by_token(os.environ['FINMIND_KEY'])
+    df = api.taiwan_stock_financial_statement(
+        stock_id=symbol,
+        start_date=arrow.now('Asia/Taipei').shift(days=-((max_q + 4) * 91 + 30)).format('YYYY-MM-DD'),
+    )
+    # Pivot to wide format
+    df = df.pivot(index='date', columns='type', values='value').reset_index()
+    # We need at least MAX_Q + 4 records for rolling calcs
+    if len(df) < 4:
         raise NotSupported
-    fmp_data = rq.get(
-        f'https://financialmodelingprep.com/api/v3/income-statement/{symbol}?period=quarter&limit={MAX_Q + 1}&apikey={FMP_KEY}'
-    ).json()
-    fmp_df = pd.DataFrame(fmp_data[::-1])
-    d = pd.to_datetime(fmp_df['fillingDate']).dt.date
+    # Sort by date ascending to ensure calculations like rolling work correctly (Oldest -> Newest)
+    df = df.sort_values('date').reset_index(drop=True)
 
-    def extract(item):
-        try:
-            return pd.Series(
-                [float(e) for i, e in data['quarterly'][item]['data'][-(MAX_Q + 1) :]]
-            )
-        except (KeyError, ValueError):
-            raise NotSupported
+    def get_series(col_name):
+        return df.get(col_name, pd.Series([0] * len(df)))
 
-    r = extract('Revenue') * 1000
-    gp = extract('GrossProfit') * 1000
-    oi = extract('OperatingIncome') * 1000
-    rnd = extract('ResearchAndDevelopmentExpenses') * 1000
-    try:
-        sgna = extract('SellingAndAdministrativeExpenses') * 1000
-    except NotSupported:
-        sgna = extract('SellingExpenses') + extract('AdministrativeExpenses') * 1000
-    eps = extract('EPST4Q')
-    return [Income(*_) for _ in zip(d, r, r - gp, gp, gp - oi, oi, rnd, sgna, eps)]
+    # 1. Calc rolling metrics (TTM) using full history
+    r_raw = get_series('Revenue')
+    eps_raw = get_series('EPS')
+    net_income = get_series('EquityAttributableToOwnersOfParent')
+    
+    shares = net_income / eps_raw
+    df['eps_ttm'] = eps_raw.rolling(4).sum()
+    df['rps_ttm'] = (r_raw / shares).rolling(4).sum()
+
+    # 2. Slice to remove the first 3 quarters (used for rolling warm-up)
+    df = df.iloc[3:].reset_index(drop=True)
+
+    # 3. Get quarterly series for the remaining valid range
+    d = (pd.to_datetime(df['date']) + pd.Timedelta(days=1)).dt.date
+    r = get_series('Revenue')
+    gp = get_series('GrossProfit')
+    oi = get_series('OperatingIncome') 
+    rnd = get_series(None)
+    sgna = get_series(None)
+    eps_ttm = get_series('eps_ttm')
+    rps_ttm = get_series('rps_ttm')
+
+    return [
+        Income(*_)
+        for _ in zip(d, r, r - gp, gp, gp - oi, oi, rnd, sgna, eps_ttm, rps_ttm)
+    ]
+
+
+def get_incomes_from_tokenterminal(symbol: str, max_q: int):
+    slug = {
+        'AAVE': 'aave',
+        'ETH': 'ethereum',
+        'UNI': 'uniswap',
+    }[symbol]
+    url = 'https://api.tokenterminal.com/trpc/projects.getFinancialStatement'
+    params = {'batch': '1', 'input': json.dumps({'0': {'project_slug': slug, 'granularity': 'month'}})}
+    headers = {
+        'accept': '*/*',
+        'accept-language': 'en-US,en;q=0.9',
+        'authorization': 'Bearer c0e5035a-64f6-4d2c-b5f6-ac1d1cb3da2f',
+        'cache-control': 'no-cache',
+        'content-type': 'application/json',
+        'origin': 'https://tokenterminal.com',
+        'pragma': 'no-cache',
+        'priority': 'u=1, i',
+        'referer': f'https://tokenterminal.com/explorer/projects/{slug}/financial-statement',
+        'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"macOS"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-site',
+        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+        'x-app-path': f'/explorer/projects/{slug}/financial-statement',
+        'x-tt-terminal-jwt': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcm9udEVuZCI6InRlcm1pbmFsIGRhc2hib2FyZCIsImlhdCI6MTc2NjUzNjU1MCwiZXhwIjoxNzY3NzQ2MTUwfQ.OzHHP4v66yYrUMoNrcQwU9rcausdKce4zQgzvjZnhIw',
+        'Cookie': '_ga=GA1.1.46309005.1766620105; _fbp=fb.1.1766620105447.33106851716235377; _gcl_au=1.1.2143769807.1766620106; intercom-id-p3bihfmm=f7640d7e-5b8d-4587-b06c-aa6f1c339bac; intercom-session-p3bihfmm=; intercom-device-id-p3bihfmm=dc4b28d8-a76b-4f46-ab88-0c17c25b10ba; _ga_TJ9TEYJ3GF=GS2.1.s1766623564$o2$g0$t1766623577$j47$l0$h0; ph_phc_amGyrGA1TpwJYYk2zNff9qfQkFBzu4uFghOgP6DjqIj_posthog=%7B%22distinct_id%22%3A%22019b52c3-8a21-7ddb-80d3-6705de899e5b%22%2C%22%24sesid%22%3A%5B1766623583834%2C%22019b52f8-41a6-7a9b-b61d-86aee0bb2210%22%2C1766623560100%5D%2C%22%24initial_person_info%22%3A%7B%22r%22%3A%22%24direct%22%2C%22u%22%3A%22https%3A%2F%2Ftokenterminal.com%2Fexplorer%2Fprojects%2Faave%2Ffinancial-statement%22%7D%7D',
+    }
+    
+    response = rq.get(url, params=params, headers=headers)
+    df = pd.DataFrame(response.json()[0]['result']['data'])
+    
+    # Pivot
+    df = df.pivot(index='timestamp', columns='metric_id', values='value').reset_index()
+    
+    # Convert timestamp
+    df['date'] = pd.to_datetime(df['timestamp'])
+    current_month_start = arrow.now('UTC').floor('month').datetime
+    df = df[df['date'] < current_month_start]
+    if len(df) < 12:
+        raise NotSupported
+    
+    # Sort
+    df = df.sort_values('date').reset_index(drop=True)
+    
+    def get_series(col_name):
+        return df.get(col_name, pd.Series([0] * len(df)))
+
+    r_raw = get_series('revenue')
+    earnings = get_series('earnings')
+    supply = get_series('token_supply_circulating')
+
+    # Rolling TTM (12 months)
+    r_ttm = r_raw.rolling(12).sum()
+    earnings_ttm = earnings.rolling(12).sum()
+
+    df['eps_ttm'] = earnings_ttm / supply
+    df['rps_ttm'] = r_ttm / supply
+
+    # Slice to requested max_q (months in this case)
+    # We need to make sure we have valid TTM data, so we drop the first 11 points
+
+    d = (pd.to_datetime(df['date']) + pd.DateOffset(months=1)).dt.date
+    r = get_series('revenue')
+    eps_ttm = get_series('eps_ttm')
+    rps_ttm = get_series('rps_ttm')
+    
+    # Fill zeros for ignored fields
+    zeros = pd.Series([0] * len(df))
+
+    return [
+        Income(*_)
+        for _ in zip(d, r, zeros, zeros, zeros, zeros, zeros, zeros, eps_ttm, rps_ttm)
+    ]
 
 
 # @cached(43200)
-def get_incomes(symbol):
-    funcs = (
-        [get_incomes_from_fmp, get_incomes_from_dog]
-        if symbol[0].isalpha()
-        else [get_incomes_from_dog]
+def get_incomes(market: Literal['c', 't', 'u'], symbol: str, max_q: int):
+    fetcher = (
+        get_incomes_from_tokenterminal if market == 'c' else
+        get_incomes_from_finmind if market == 't' else
+        get_incomes_from_fmp
     )
-    for func in funcs:
-        try:
-            return func(symbol)
-        except NotSupported:
-            continue
+    return fetcher(symbol, max_q)
 
 
-def create_sankey_frames(incomes: list[Income]):
-    incomes = incomes[-MAX_Q:]
+def create_sankey_frames(incomes: list[Income], max_q: int):
+    incomes = incomes[-max_q:]
     max_r = max(e.r for e in incomes)
     frames = [
         go.Sankey(
@@ -266,12 +373,16 @@ def create_sankey_frames(incomes: list[Income]):
     return frames
 
 
-def get_prices(symbol: str):
-    market = 'u' if symbol[0].isalpha() else 't'
+def get_prices(market: Literal['c', 't', 'u'], symbol: str, max_q: int):
     prices = rq.get(
-        f'http://52.198.155.160:8080/prices?market={market}&symbol={symbol}&n={MAX_D}'
+        f'http://52.198.155.160:8080/prices?market={market}&symbol={symbol}&n={max_q * 91}'
     ).json()
-    now = arrow.now('Etc/GMT+5' if market == 'u' else 'Asia/Taipei')
+    tz = (
+        'UTC' if market == 'c' else
+        'Asia/Taipei' if market == 't' else
+        'America/New_York'
+    )
+    now = arrow.now(tz)
     dates = [
         e.date()
         for e in pd.date_range(now.shift(days=-(len(prices) - 1)).date(), now.date())
@@ -279,28 +390,28 @@ def get_prices(symbol: str):
     return pd.Series(prices, dates)
 
 
-def calc_bands(incomes: list[Income], prices: pd.Series):
-    dates = [e.date() for e in pd.date_range(incomes[0].d, prices.index[-1])]
-    eps = (
-        pd.Series({income.d: income.eps for income in incomes}, dates)
+def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
+    dates = pd.date_range(incomes[0].d, prices.index[-1]).date
+    s = (
+        pd.Series({income.d: getattr(income, metric) for income in incomes}, dates)
         .ffill()
-        .tail(MAX_D)
+        .tail(len(prices))
     )
-    eps[eps <= 0] = None
-    PE = prices / eps
-    min_pe, max_pe = PE.min(), PE.max()
-    if not min_pe < max_pe:
-        return pd.DataFrame()
-    bands = pd.DataFrame(index=eps.index)
+    s[s <= 0] = None
+    multiples = prices / s
+    min_m, max_m = multiples.quantile(0.02), multiples.quantile(0.98)
+    bands = pd.DataFrame(index=s.index)
+    if not min_m < max_m:
+        return bands
     for p in range(0, 120, 20):
-        pe = min_pe + (max_pe - min_pe) * (p / 100)
-        bands[pe] = eps * pe
+        m = min_m + (max_m - min_m) * (p / 100)
+        bands[m] = s * m
     return bands
 
 
-def create_price_frames_and_bands(symbol, incomes):
-    prices = get_prices(symbol)
-    dates = [e.d for e in incomes[-MAX_Q:]] + [prices.index[-1]]
+def create_price_frames_and_bands(market: Literal['c', 't', 'u'], symbol, incomes, max_q: int):
+    prices = get_prices(market, symbol, max_q)
+    dates = [e.d for e in incomes[-max_q:]] + [prices.index[-1]]
     frames = [
         go.Scatter(
             hoverlabel=dict(
@@ -314,45 +425,85 @@ def create_price_frames_and_bands(symbol, incomes):
         )
         for d in dates
     ]
-    band_df = calc_bands(incomes, prices).fillna(0)
-    bands = [
+    pe_df = calc_bands(incomes, prices, 'eps').fillna(0)
+    pe_bands = [
         go.Scatter(
             fill='tonexty' if i else None,
             hoverinfo='skip',
             line=dict(color=BAND_COLORS[i], width=0),
             mode='lines',
-            name=round(pe),
-            x=band_df.index,
+            name=round(m),
+            x=pe_df.index,
             y=band,
         )
-        for i, (pe, band) in enumerate(band_df.items())
+        for i, (m, band) in enumerate(pe_df.items())
     ]
-    return frames, bands
+    ps_df = calc_bands(incomes, prices, 'rps').fillna(0)
+    ps_bands = [
+        go.Scatter(
+            fill='tonexty' if i else None,
+            hoverinfo='skip',
+            line=dict(color=BAND_COLORS[i], width=0),
+            mode='lines',
+            name=round(m),
+            x=ps_df.index,
+            y=band,
+        )
+        for i, (m, band) in enumerate(ps_df.items())
+    ]
+    return frames, pe_bands, ps_bands
 
 
 @callback(
     Output('graph', 'figure'),
     Output('alert', 'displayed'),
     State('input', 'value'),
+    State('max_q', 'value'),
     Input('button', 'n_clicks'),
 )
-def main(symbol: str, n_clicks: int):
-    if not (incomes := get_incomes(symbol)):
+def main(symbol: str, max_q: int, n_clicks: int):
+    market = (
+        'c' if symbol.endswith('.c') else
+        't' if symbol[0].isdigit() else
+        'u'
+    )
+    if market == 'c':
+        symbol = symbol[:-2]
+    if not (incomes := get_incomes(market, symbol, max_q)):
         return go.Figure(go.Sankey(), go.Layout(paper_bgcolor=TRANSPARENT)), True
-    s_frames = create_sankey_frames(incomes)
-    p_frames, bands = create_price_frames_and_bands(symbol, incomes)
+    s_frames = create_sankey_frames(incomes, max_q)
+    p_frames, pe_bands, ps_bands = create_price_frames_and_bands(market, symbol, incomes, max_q)
     fig = make_subplots(
-        2, 1, specs=[[{'type': 'sankey'}], [{'type': 'xy'}]], vertical_spacing=0.2
+        3,
+        1,
+        specs=[[{'type': 'sankey'}], [{'type': 'xy'}], [{'type': 'xy'}]],
+        vertical_spacing=0.1,
     )
     fig.add_trace(s_frames[-1], 1, 1)
     fig.add_trace(p_frames[-1], 2, 1)
-    for band in bands:
+    fig.add_trace(p_frames[-1], 3, 1)
+    for band in pe_bands:
         fig.add_trace(band, 2, 1)
         fig.add_annotation(
-            showarrow=False, text=band.name + 'x', x=band.x[-1], y=band.y[-1]
+            showarrow=False,
+            text=band.name + 'x',
+            x=band.x[-1],
+            y=band.y[-1],
+            row=2,
+            col=1,
+        )
+    for band in ps_bands:
+        fig.add_trace(band, 3, 1)
+        fig.add_annotation(
+            showarrow=False,
+            text=band.name + 'x',
+            x=band.x[-1],
+            y=band.y[-1],
+            row=3,
+            col=1,
         )
     fig.frames = [
-        go.Frame(data=[s_frame, p_frame], name=s_frame.name)
+        go.Frame(data=[s_frame, p_frame, p_frame], name=s_frame.name)
         for s_frame, p_frame in zip(s_frames, p_frames)
     ]
     fig.update_layout(
@@ -413,8 +564,10 @@ def main(symbol: str, n_clicks: int):
                     y=-0.02,
                 )
             ],
-            xaxis=dict(showgrid=False, visible=False),
-            yaxis=dict(showgrid=False, visible=False),
+            xaxis1=dict(showgrid=False, visible=False),
+            yaxis1=dict(showgrid=False, visible=False),
+            xaxis2=dict(showgrid=False, visible=False),
+            yaxis2=dict(showgrid=False, visible=False),
         )
     )
     return fig, False
