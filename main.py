@@ -223,7 +223,7 @@ def get_incomes_from_tokenterminal(symbol: str, max_q: int):
         'AAVE': 'aave',
         'ETH': 'ethereum',
         'UNI': 'uniswap',
-    }[symbol[:-2]]
+    }[symbol]
     url = 'https://api.tokenterminal.com/trpc/projects.getFinancialStatement'
     params = {'batch': '1', 'input': json.dumps({'0': {'project_slug': slug, 'granularity': 'month'}})}
     headers = {
