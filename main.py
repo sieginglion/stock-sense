@@ -203,7 +203,7 @@ def get_incomes_from_finmind(symbol: str, max_q: int):
     df = df.iloc[3:].reset_index(drop=True)
 
     # 3. Get quarterly series for the remaining valid range
-    d = pd.to_datetime(df['date']).dt.date
+    d = (pd.to_datetime(df['date']) + pd.Timedelta(days=1)).dt.date
     r = get_series('Revenue')
     gp = get_series('GrossProfit')
     oi = get_series('OperatingIncome') 
