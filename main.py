@@ -18,6 +18,9 @@ from plotly.subplots import make_subplots
 dotenv.load_dotenv()
 
 FMP_KEY = os.environ['FMP_KEY']
+FINMIND_KEY = os.environ['FINMIND_KEY']
+SLUG_TABLE = json.loads(os.environ['SLUG_TABLE'])
+
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
 
 MARGIN = '50px'
@@ -174,7 +177,7 @@ def get_incomes_from_fmp(symbol: str, max_q: int):
 
 def get_incomes_from_finmind(symbol: str, max_q: int):
     api = DataLoader()
-    api.login_by_token(os.environ['FINMIND_KEY'])
+    api.login_by_token(FINMIND_KEY)
     df = api.taiwan_stock_financial_statement(
         stock_id=symbol,
         start_date=arrow.now('Asia/Taipei').shift(days=-((max_q + 4) * 91 + 30)).format('YYYY-MM-DD'),
@@ -219,11 +222,7 @@ def get_incomes_from_finmind(symbol: str, max_q: int):
 
 
 def get_incomes_from_tokenterminal(symbol: str, max_q: int):
-    slug = {
-        'AAVE': 'aave',
-        'ETH': 'ethereum',
-        'UNI': 'uniswap',
-    }[symbol]
+    slug = SLUG_TABLE[symbol]
     url = 'https://api.tokenterminal.com/trpc/projects.getFinancialStatement'
     params = {'batch': '1', 'input': json.dumps({'0': {'project_slug': slug, 'granularity': 'month'}})}
     headers = {
@@ -305,8 +304,8 @@ def get_incomes(market: Literal['c', 't', 'u'], symbol: str, max_q: int):
     return fetcher(symbol, max_q)
 
 
-def create_sankey_frames(incomes: list[Income], max_q: int):
-    incomes = incomes[-max_q:]
+def create_sankey_frames(incomes: list[Income], max_q: int, market: Literal['c', 't', 'u']):
+    incomes = incomes[-max_q * (3 if market == 'c' else 1):]
     max_r = max(e.r for e in incomes)
     frames = [
         go.Sankey(
@@ -411,7 +410,7 @@ def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
 
 def create_price_frames_and_bands(market: Literal['c', 't', 'u'], symbol, incomes, max_q: int):
     prices = get_prices(market, symbol, max_q)
-    dates = [e.d for e in incomes[-max_q:]] + [prices.index[-1]]
+    dates = [e.d for e in incomes[-max_q * (3 if market == 'c' else 1):]] + [prices.index[-1]]
     frames = [
         go.Scatter(
             hoverlabel=dict(
@@ -471,7 +470,7 @@ def main(symbol: str, max_q: int, n_clicks: int):
         symbol = symbol[:-2]
     if not (incomes := get_incomes(market, symbol, max_q)):
         return go.Figure(go.Sankey(), go.Layout(paper_bgcolor=TRANSPARENT)), True
-    s_frames = create_sankey_frames(incomes, max_q)
+    s_frames = create_sankey_frames(incomes, max_q, market)
     p_frames, pe_bands, ps_bands = create_price_frames_and_bands(market, symbol, incomes, max_q)
     fig = make_subplots(
         3,
@@ -575,3 +574,5 @@ def main(symbol: str, max_q: int, n_clicks: int):
 
 if __name__ == '__main__':
     app.run(debug=True)
+
+# TODO: max_q * 91 and len(incomes) mismatch
