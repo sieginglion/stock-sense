@@ -196,7 +196,7 @@ def get_incomes_from_finmind(symbol: str, max_q: int):
     # 1. Calc rolling metrics (TTM) using full history
     r_raw = get_series('Revenue')
     eps_raw = get_series('EPS')
-    net_income = get_series('EquityAttributableToOwnersOfParent')
+    net_income = df.get('EquityAttributableToOwnersOfParent', df['IncomeAfterTaxes'])
     
     shares = net_income / eps_raw
     df['eps_ttm'] = eps_raw.rolling(4).sum()
