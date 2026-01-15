@@ -2,7 +2,7 @@ import datetime
 import json
 import os
 import subprocess
-from typing import NamedTuple, Literal
+from typing import Literal, NamedTuple
 
 import arrow
 import dash_bootstrap_components as dbc
@@ -10,7 +10,6 @@ import dotenv
 import pandas as pd
 import requests as rq
 from dash import Dash, Input, Output, State, callback, dcc, html
-from general_cache import cached
 from FinMind.data import DataLoader
 from plotly import graph_objects as go
 from plotly.subplots import make_subplots
@@ -168,7 +167,7 @@ def get_incomes_from_fmp(symbol: str, max_q: int):
     sgna = get_series('sellingGeneralAndAdministrativeExpenses')
     eps_ttm = get_series('eps_ttm')
     rps_ttm = get_series('rps_ttm')
-    
+
     return [
         Income(*_)
         for _ in zip(d, r, r - gp, gp, gp - oi, oi, rnd, sgna, eps_ttm, rps_ttm)
@@ -180,7 +179,9 @@ def get_incomes_from_finmind(symbol: str, max_q: int):
     api.login_by_token(FINMIND_KEY)
     df = api.taiwan_stock_financial_statement(
         stock_id=symbol,
-        start_date=arrow.now('Asia/Taipei').shift(days=-((max_q + 4) * 91 + 30)).format('YYYY-MM-DD'),
+        start_date=arrow.now('Asia/Taipei')
+        .shift(days=-((max_q + 4) * 91 + 30))
+        .format('YYYY-MM-DD'),
     )
     # Pivot to wide format
     df = df.pivot(index='date', columns='type', values='value').reset_index()
@@ -197,7 +198,7 @@ def get_incomes_from_finmind(symbol: str, max_q: int):
     r_raw = get_series('Revenue')
     eps_raw = get_series('EPS')
     net_income = df.get('EquityAttributableToOwnersOfParent', df['IncomeAfterTaxes'])
-    
+
     shares = net_income / eps_raw
     df['eps_ttm'] = eps_raw.rolling(4).sum()
     df['rps_ttm'] = (r_raw / shares).rolling(4).sum()
@@ -209,7 +210,7 @@ def get_incomes_from_finmind(symbol: str, max_q: int):
     d = (pd.to_datetime(df['date']) + pd.Timedelta(days=1)).dt.date
     r = get_series('Revenue')
     gp = get_series('GrossProfit')
-    oi = get_series('OperatingIncome') 
+    oi = get_series('OperatingIncome')
     rnd = get_series(None)
     sgna = get_series(None)
     eps_ttm = get_series('eps_ttm')
@@ -224,7 +225,10 @@ def get_incomes_from_finmind(symbol: str, max_q: int):
 def get_incomes_from_tokenterminal(symbol: str, max_q: int):
     slug = SLUG_TABLE[symbol]
     url = 'https://api.tokenterminal.com/trpc/projects.getFinancialStatement'
-    params = {'batch': '1', 'input': json.dumps({'0': {'project_slug': slug, 'granularity': 'month'}})}
+    params = {
+        'batch': '1',
+        'input': json.dumps({'0': {'project_slug': slug, 'granularity': 'month'}}),
+    }
     headers = {
         'accept': '*/*',
         'accept-language': 'en-US,en;q=0.9',
@@ -246,27 +250,27 @@ def get_incomes_from_tokenterminal(symbol: str, max_q: int):
         'x-tt-terminal-jwt': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcm9udEVuZCI6InRlcm1pbmFsIGRhc2hib2FyZCIsImlhdCI6MTc2NjUzNjU1MCwiZXhwIjoxNzY3NzQ2MTUwfQ.OzHHP4v66yYrUMoNrcQwU9rcausdKce4zQgzvjZnhIw',
         'Cookie': '_ga=GA1.1.46309005.1766620105; _fbp=fb.1.1766620105447.33106851716235377; _gcl_au=1.1.2143769807.1766620106; intercom-id-p3bihfmm=f7640d7e-5b8d-4587-b06c-aa6f1c339bac; intercom-session-p3bihfmm=; intercom-device-id-p3bihfmm=dc4b28d8-a76b-4f46-ab88-0c17c25b10ba; _ga_TJ9TEYJ3GF=GS2.1.s1766623564$o2$g0$t1766623577$j47$l0$h0; ph_phc_amGyrGA1TpwJYYk2zNff9qfQkFBzu4uFghOgP6DjqIj_posthog=%7B%22distinct_id%22%3A%22019b52c3-8a21-7ddb-80d3-6705de899e5b%22%2C%22%24sesid%22%3A%5B1766623583834%2C%22019b52f8-41a6-7a9b-b61d-86aee0bb2210%22%2C1766623560100%5D%2C%22%24initial_person_info%22%3A%7B%22r%22%3A%22%24direct%22%2C%22u%22%3A%22https%3A%2F%2Ftokenterminal.com%2Fexplorer%2Fprojects%2Faave%2Ffinancial-statement%22%7D%7D',
     }
-    
+
     response = rq.get(url, params=params, headers=headers)
     df = pd.DataFrame(response.json()[0]['result']['data'])
-    
+
     # Pivot
     df = df.pivot(index='timestamp', columns='metric_id', values='value').reset_index()
-    
+
     # Convert timestamp
     df['date'] = pd.to_datetime(df['timestamp'])
     current_month_start = arrow.now('UTC').floor('month').datetime
     df = df[df['date'] < current_month_start]
     if len(df) < 12:
         raise NotSupported
-    
+
     # Sort
     df = df.sort_values('date').reset_index(drop=True)
-    
+
     def get_series(col_name):
         return df.get(col_name, pd.Series([0] * len(df)))
 
-    r_raw = get_series('revenue')
+    r_raw = get_series('fees')
     earnings = get_series('earnings')
     supply = get_series('token_supply_circulating')
 
@@ -284,7 +288,7 @@ def get_incomes_from_tokenterminal(symbol: str, max_q: int):
     r = get_series('revenue')
     eps_ttm = get_series('eps_ttm')
     rps_ttm = get_series('rps_ttm')
-    
+
     # Fill zeros for ignored fields
     zeros = pd.Series([0] * len(df))
 
@@ -297,15 +301,17 @@ def get_incomes_from_tokenterminal(symbol: str, max_q: int):
 # @cached(43200)
 def get_incomes(market: Literal['c', 't', 'u'], symbol: str, max_q: int):
     fetcher = (
-        get_incomes_from_tokenterminal if market == 'c' else
-        get_incomes_from_finmind if market == 't' else
-        get_incomes_from_fmp
+        get_incomes_from_tokenterminal
+        if market == 'c'
+        else get_incomes_from_finmind if market == 't' else get_incomes_from_fmp
     )
     return fetcher(symbol, max_q)
 
 
-def create_sankey_frames(incomes: list[Income], max_q: int, market: Literal['c', 't', 'u']):
-    incomes = incomes[-max_q * (3 if market == 'c' else 1):]
+def create_sankey_frames(
+    incomes: list[Income], max_q: int, market: Literal['c', 't', 'u']
+):
+    incomes = incomes[-max_q * (3 if market == 'c' else 1) :]
     max_r = max(e.r for e in incomes)
     frames = [
         go.Sankey(
@@ -377,9 +383,9 @@ def get_prices(market: Literal['c', 't', 'u'], symbol: str, max_q: int):
         f'http://52.198.155.160:8080/prices?market={market}&symbol={symbol}&n={max_q * 91}'
     ).json()
     tz = (
-        'UTC' if market == 'c' else
-        'Asia/Taipei' if market == 't' else
-        'America/New_York'
+        'UTC'
+        if market == 'c'
+        else 'Asia/Taipei' if market == 't' else 'America/New_York'
     )
     now = arrow.now(tz)
     dates = [
@@ -408,9 +414,13 @@ def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
     return bands
 
 
-def create_price_frames_and_bands(market: Literal['c', 't', 'u'], symbol, incomes, max_q: int):
+def create_price_frames_and_bands(
+    market: Literal['c', 't', 'u'], symbol, incomes, max_q: int
+):
     prices = get_prices(market, symbol, max_q)
-    dates = [e.d for e in incomes[-max_q * (3 if market == 'c' else 1):]] + [prices.index[-1]]
+    dates = [e.d for e in incomes[-max_q * (3 if market == 'c' else 1) :]] + [
+        prices.index[-1]
+    ]
     frames = [
         go.Scatter(
             hoverlabel=dict(
@@ -461,17 +471,15 @@ def create_price_frames_and_bands(market: Literal['c', 't', 'u'], symbol, income
     Input('button', 'n_clicks'),
 )
 def main(symbol: str, max_q: int, n_clicks: int):
-    market = (
-        'c' if symbol.endswith('.c') else
-        't' if symbol[0].isdigit() else
-        'u'
-    )
+    market = 'c' if symbol.endswith('.c') else 't' if symbol[0].isdigit() else 'u'
     if market == 'c':
         symbol = symbol[:-2]
     if not (incomes := get_incomes(market, symbol, max_q)):
         return go.Figure(go.Sankey(), go.Layout(paper_bgcolor=TRANSPARENT)), True
     s_frames = create_sankey_frames(incomes, max_q, market)
-    p_frames, pe_bands, ps_bands = create_price_frames_and_bands(market, symbol, incomes, max_q)
+    p_frames, pe_bands, ps_bands = create_price_frames_and_bands(
+        market, symbol, incomes, max_q
+    )
     fig = make_subplots(
         3,
         1,
