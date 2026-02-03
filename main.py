@@ -141,11 +141,11 @@ class Income(NamedTuple):
 
 def get_incomes_from_fmp(symbol: str, max_q: int):
     data = rq.get(
-        f'https://financialmodelingprep.com/api/v3/income-statement/{symbol}?period=quarter&limit={max_q + 4}&apikey={FMP_KEY}'
+        f'https://financialmodelingprep.com/api/v3/income-statement/{symbol}?period=quarter&limit={max_q + 5}&apikey={FMP_KEY}'
     ).json()
     if len(data) < 4:
         raise NotSupported
-    df = pd.DataFrame(data).sort_values('date').reset_index(drop=True)
+    df = pd.DataFrame(data).sort_values('fillingDate').reset_index(drop=True)
 
     def get_series(col_name):
         return df.get(col_name, pd.Series([0] * len(df)))
@@ -159,7 +159,7 @@ def get_incomes_from_fmp(symbol: str, max_q: int):
 
     df = df.iloc[3:].reset_index(drop=True)
 
-    d = pd.to_datetime(df['date']).dt.date
+    d = pd.to_datetime(df['fillingDate']).dt.date
     r = get_series('revenue')
     gp = get_series('grossProfit')
     oi = get_series('operatingIncome')
@@ -404,14 +404,16 @@ def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
     )
     s[s <= 0] = None
     multiples = prices / s
-    min_m, max_m = multiples.quantile(0.02), multiples.quantile(0.98)
+    # min_m, max_m = multiples.min(), multiples.max()
+    min_m, max_m = multiples.quantile(0.01), multiples.quantile(0.99)
     bands = pd.DataFrame(index=s.index)
     if not min_m < max_m:
         return bands
     for p in range(0, 120, 20):
         m = min_m + (max_m - min_m) * (p / 100)
         bands[m] = s * m
-    return bands
+    extra = pd.date_range(bands.index[-1] + pd.Timedelta(days=1), periods=6)
+    return pd.concat([bands, pd.DataFrame([bands.iloc[-1]] * 6, index=extra)])
 
 
 def create_price_frames_and_bands(
