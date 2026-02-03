@@ -145,7 +145,7 @@ def get_incomes_from_fmp(symbol: str, max_q: int):
     ).json()
     if len(data) < 4:
         raise NotSupported
-    df = pd.DataFrame(data).sort_values('fillingDate').reset_index(drop=True)
+    df = pd.DataFrame(data).sort_values('date').reset_index(drop=True)
 
     def get_series(col_name):
         return df.get(col_name, pd.Series([0] * len(df)))
@@ -159,7 +159,7 @@ def get_incomes_from_fmp(symbol: str, max_q: int):
 
     df = df.iloc[3:].reset_index(drop=True)
 
-    d = pd.to_datetime(df['fillingDate']).dt.date
+    d = pd.to_datetime(df['date']).dt.date
     r = get_series('revenue')
     gp = get_series('grossProfit')
     oi = get_series('operatingIncome')
