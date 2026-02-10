@@ -1,12 +1,14 @@
 import datetime
 import json
 import os
+import pickle
 import subprocess
 from typing import Literal, NamedTuple
 
 import arrow
 import dash_bootstrap_components as dbc
 import dotenv
+import numpy as np
 import pandas as pd
 import requests as rq
 from dash import Dash, Input, Output, State, callback, dcc, html
@@ -19,6 +21,29 @@ dotenv.load_dotenv()
 FMP_KEY = os.environ['FMP_KEY']
 FINMIND_KEY = os.environ['FINMIND_KEY']
 SLUG_TABLE = json.loads(os.environ['SLUG_TABLE'])
+
+CACHE = "ON_TWSE.pkl"
+URL = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
+
+if os.path.isfile(CACHE):
+    with open(CACHE, "rb") as f:
+        ON_TWSE = pickle.load(f)
+else:
+    df = pd.read_html(rq.get(URL, verify=False).text)[0]
+    ON_TWSE = {
+        r.iloc[0].split("\u3000", 1)[0]
+        for _, r in df.iterrows()
+        if r.iloc[5] == "ESVUFR"
+    }
+    with open(CACHE, "wb") as f:
+        pickle.dump(ON_TWSE, f)
+
+
+def add_suffix(symbol: str):
+    if not symbol[0].isdecimal():
+        return symbol
+    return symbol + ('.TW' if symbol in ON_TWSE else '.TWO')
+
 
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
 
@@ -49,10 +74,10 @@ app.layout = html.Div(
                     'input',
                     dict(textAlign='center', width='140px', marginRight=MARGIN),
                     placeholder='TSLA, 2330',
-                    value='TSLA',
+                    value='3131',
                 ),
                 dbc.Input(
-                    'max_q',
+                    'q',
                     dict(textAlign='center', width='70px', marginRight=MARGIN),
                     value=4,
                     type='number',
@@ -139,27 +164,41 @@ class Income(NamedTuple):
     rps: int
 
 
-def get_incomes_from_fmp(symbol: str, max_q: int):
-    data = rq.get(
-        f'https://financialmodelingprep.com/api/v3/income-statement/{symbol}?period=quarter&limit={max_q + 5}&apikey={FMP_KEY}'
-    ).json()
+def get_incomes_from_fmp(market: Literal['t', 'u'], symbol: str, q: int):
+    params = {
+        'apikey': FMP_KEY,
+        'limit': q + 5,
+        'period': 'quarter',
+    }
+    if market == 't':
+        url = f'https://financialmodelingprep.com/api/v3/income-statement/{ add_suffix(symbol) }'
+        date_col = 'date'
+        date_offset = 1
+        eps_col = 'epsdiluted'
+    else:
+        url = 'https://financialmodelingprep.com/stable/income-statement'
+        params['symbol'] = symbol
+        date_col = 'filingDate'
+        date_offset = 0
+        eps_col = 'epsDiluted'
+    data = rq.get(url, params).json()
     if len(data) < 4:
-        raise NotSupported
-    df = pd.DataFrame(data).sort_values('fillingDate').reset_index(drop=True)
+        raise ValueError
+    df = pd.DataFrame(data).sort_values(date_col)
 
     def get_series(col_name):
-        return df.get(col_name, pd.Series([0] * len(df)))
+        return df.get(col_name, pd.Series(0, df.index))
 
     r_raw = get_series('revenue')
-    eps_raw = get_series('epsdiluted')
+    eps_raw = get_series(eps_col)
     shares = get_series('weightedAverageShsOutDil')
 
     df['eps_ttm'] = eps_raw.rolling(4).sum()
     df['rps_ttm'] = (r_raw / shares).rolling(4).sum()
 
-    df = df.iloc[3:].reset_index(drop=True)
+    df = df.iloc[3:]
 
-    d = pd.to_datetime(df['fillingDate']).dt.date
+    d = (pd.to_datetime(df[date_col]) + pd.Timedelta(days=date_offset)).dt.date
     r = get_series('revenue')
     gp = get_series('grossProfit')
     oi = get_series('operatingIncome')
@@ -174,55 +213,55 @@ def get_incomes_from_fmp(symbol: str, max_q: int):
     ]
 
 
-def get_incomes_from_finmind(symbol: str, max_q: int):
-    api = DataLoader()
-    api.login_by_token(FINMIND_KEY)
-    df = api.taiwan_stock_financial_statement(
-        stock_id=symbol,
-        start_date=arrow.now('Asia/Taipei')
-        .shift(days=-((max_q + 4) * 91 + 30))
-        .format('YYYY-MM-DD'),
-    )
-    # Pivot to wide format
-    df = df.pivot(index='date', columns='type', values='value').reset_index()
-    # We need at least MAX_Q + 4 records for rolling calcs
-    if len(df) < 4:
-        raise NotSupported
-    # Sort by date ascending to ensure calculations like rolling work correctly (Oldest -> Newest)
-    df = df.sort_values('date').reset_index(drop=True)
+# def get_incomes_from_finmind(symbol: str, q: int):
+#     api = DataLoader()
+#     api.login_by_token(FINMIND_KEY)
+#     df = api.taiwan_stock_financial_statement(
+#         stock_id=symbol,
+#         start_date=arrow.now('Asia/Taipei')
+#         .shift(days=-((q + 5) * 91))
+#         .format('YYYY-MM-DD'),
+#     )
+#     # Pivot to wide format
+#     df = df.pivot(index='date', columns='type', values='value').reset_index()
+#     # We need at least Q + 4 records for rolling calcs
+#     if len(df) < 4:
+#         raise NotSupported
+#     # Sort by date ascending to ensure calculations like rolling work correctly (Oldest -> Newest)
+#     df = df.sort_values('date').reset_index(drop=True)
 
-    def get_series(col_name):
-        return df.get(col_name, pd.Series([0] * len(df)))
+#     def get_series(col_name):
+#         return df.get(col_name, pd.Series([0] * len(df)))
 
-    # 1. Calc rolling metrics (TTM) using full history
-    r_raw = get_series('Revenue')
-    eps_raw = get_series('EPS')
-    net_income = df.get('EquityAttributableToOwnersOfParent', df['IncomeAfterTaxes'])
+#     # 1. Calc rolling metrics (TTM) using full history
+#     r_raw = get_series('Revenue')
+#     eps_raw = get_series('EPS')
+#     net_income = df.get('EquityAttributableToOwnersOfParent', df['IncomeAfterTaxes'])
 
-    shares = net_income / eps_raw
-    df['eps_ttm'] = eps_raw.rolling(4).sum()
-    df['rps_ttm'] = (r_raw / shares).rolling(4).sum()
+#     shares = net_income / eps_raw
+#     df['eps_ttm'] = eps_raw.rolling(4).sum()
+#     df['rps_ttm'] = (r_raw / shares).rolling(4).sum()
 
-    # 2. Slice to remove the first 3 quarters (used for rolling warm-up)
-    df = df.iloc[3:].reset_index(drop=True)
+#     # 2. Slice to remove the first 3 quarters (used for rolling warm-up)
+#     df = df.iloc[3:].reset_index(drop=True)
 
-    # 3. Get quarterly series for the remaining valid range
-    d = (pd.to_datetime(df['date']) + pd.Timedelta(days=1)).dt.date
-    r = get_series('Revenue')
-    gp = get_series('GrossProfit')
-    oi = get_series('OperatingIncome')
-    rnd = get_series(None)
-    sgna = get_series(None)
-    eps_ttm = get_series('eps_ttm')
-    rps_ttm = get_series('rps_ttm')
+#     # 3. Get quarterly series for the remaining valid range
+#     d = (pd.to_datetime(df['date']) + pd.Timedelta(days=1)).dt.date
+#     r = get_series('Revenue')
+#     gp = get_series('GrossProfit')
+#     oi = get_series('OperatingIncome')
+#     rnd = get_series(None)
+#     sgna = get_series(None)
+#     eps_ttm = get_series('eps_ttm')
+#     rps_ttm = get_series('rps_ttm')
 
-    return [
-        Income(*_)
-        for _ in zip(d, r, r - gp, gp, gp - oi, oi, rnd, sgna, eps_ttm, rps_ttm)
-    ]
+#     return [
+#         Income(*_)
+#         for _ in zip(d, r, r - gp, gp, gp - oi, oi, rnd, sgna, eps_ttm, rps_ttm)
+#     ]
 
 
-def get_incomes_from_tokenterminal(symbol: str, max_q: int):
+def get_incomes_from_tokenterminal(symbol: str, q: int):
     slug = SLUG_TABLE[symbol]
     url = 'https://api.tokenterminal.com/trpc/projects.getFinancialStatement'
     params = {
@@ -281,7 +320,7 @@ def get_incomes_from_tokenterminal(symbol: str, max_q: int):
     df['eps_ttm'] = earnings_ttm / supply
     df['rps_ttm'] = r_ttm / supply
 
-    # Slice to requested max_q (months in this case)
+    # Slice to requested q (months in this case)
     # We need to make sure we have valid TTM data, so we drop the first 11 points
 
     d = (pd.to_datetime(df['date']) + pd.DateOffset(months=1)).dt.date
@@ -298,20 +337,16 @@ def get_incomes_from_tokenterminal(symbol: str, max_q: int):
     ]
 
 
-# @cached(43200)
-def get_incomes(market: Literal['c', 't', 'u'], symbol: str, max_q: int):
-    fetcher = (
-        get_incomes_from_tokenterminal
+def get_incomes(market: Literal['c', 't', 'u'], symbol: str, q: int):
+    return (
+        get_incomes_from_tokenterminal(symbol, q)
         if market == 'c'
-        else get_incomes_from_finmind if market == 't' else get_incomes_from_fmp
+        else get_incomes_from_fmp(market, symbol, q)
     )
-    return fetcher(symbol, max_q)
 
 
-def create_sankey_frames(
-    incomes: list[Income], max_q: int, market: Literal['c', 't', 'u']
-):
-    incomes = incomes[-max_q * (3 if market == 'c' else 1) :]
+def create_sankey_frames(incomes: list[Income], q: int, market: Literal['c', 't', 'u']):
+    incomes = incomes[-q * (3 if market == 'c' else 1) :]
     max_r = max(e.r for e in incomes)
     frames = [
         go.Sankey(
@@ -378,49 +413,41 @@ def create_sankey_frames(
     return frames
 
 
-def get_prices(market: Literal['c', 't', 'u'], symbol: str, max_q: int):
+def get_prices(market: Literal['c', 't', 'u'], symbol: str, q: int):
     prices = rq.get(
-        f'http://52.198.155.160:8080/prices?market={market}&symbol={symbol}&n={max_q * 91}'
+        f'http://52.198.155.160:8080/prices?market={market}&symbol={symbol}&n={91 * q}'
     ).json()
-    tz = (
+    today = pd.Timestamp.now(
         'UTC'
         if market == 'c'
         else 'Asia/Taipei' if market == 't' else 'America/New_York'
     )
-    now = arrow.now(tz)
-    dates = [
-        e.date()
-        for e in pd.date_range(now.shift(days=-(len(prices) - 1)).date(), now.date())
-    ]
-    return pd.Series(prices, dates)
+    start = today - pd.Timedelta(days=len(prices) - 1)
+    return pd.Series(prices, pd.date_range(start, today).date)
 
 
 def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
-    dates = pd.date_range(incomes[0].d, prices.index[-1]).date
     s = (
-        pd.Series({income.d: getattr(income, metric) for income in incomes}, dates)
-        .ffill()
+        pd.Series({income.d: getattr(income, metric) for income in incomes})
+        .reindex(pd.date_range(incomes[0].d, prices.index[-1]).date, method='ffill')
         .tail(len(prices))
     )
     s[s <= 0] = None
-    multiples = prices / s
-    # min_m, max_m = multiples.min(), multiples.max()
-    min_m, max_m = multiples.quantile(0.01), multiples.quantile(0.99)
+    log_m = np.log((prices / s).dropna())
+    lo, hi = log_m.quantile(0.011), log_m.quantile(0.989)
     bands = pd.DataFrame(index=s.index)
-    if not min_m < max_m:
-        return bands
     for p in range(0, 120, 20):
-        m = min_m + (max_m - min_m) * (p / 100)
+        m = np.exp(lo + (hi - lo) * (p / 100))
         bands[m] = s * m
-    extra = pd.date_range(bands.index[-1] + pd.Timedelta(days=1), periods=6)
-    return pd.concat([bands, pd.DataFrame([bands.iloc[-1]] * 6, index=extra)])
+    future = pd.date_range(bands.index[-1] + pd.Timedelta(days=1), periods=6)
+    return pd.concat([bands, pd.DataFrame([bands.iloc[-1]] * 6, future)])
 
 
 def create_price_frames_and_bands(
-    market: Literal['c', 't', 'u'], symbol, incomes, max_q: int
+    market: Literal['c', 't', 'u'], symbol, incomes, q: int
 ):
-    prices = get_prices(market, symbol, max_q)
-    dates = [e.d for e in incomes[-max_q * (3 if market == 'c' else 1) :]] + [
+    prices = get_prices(market, symbol, q)
+    dates = [e.d for e in incomes[-q * (3 if market == 'c' else 1) :]] + [
         prices.index[-1]
     ]
     frames = [
@@ -469,18 +496,18 @@ def create_price_frames_and_bands(
     Output('graph', 'figure'),
     Output('alert', 'displayed'),
     State('input', 'value'),
-    State('max_q', 'value'),
+    State('q', 'value'),
     Input('button', 'n_clicks'),
 )
-def main(symbol: str, max_q: int, n_clicks: int):
+def main(symbol: str, q: int, n_clicks: int):
     market = 'c' if symbol.endswith('.c') else 't' if symbol[0].isdigit() else 'u'
     if market == 'c':
         symbol = symbol[:-2]
-    if not (incomes := get_incomes(market, symbol, max_q)):
+    if not (incomes := get_incomes(market, symbol, q)):
         return go.Figure(go.Sankey(), go.Layout(paper_bgcolor=TRANSPARENT)), True
-    s_frames = create_sankey_frames(incomes, max_q, market)
+    s_frames = create_sankey_frames(incomes, q, market)
     p_frames, pe_bands, ps_bands = create_price_frames_and_bands(
-        market, symbol, incomes, max_q
+        market, symbol, incomes, q
     )
     fig = make_subplots(
         3,
@@ -584,5 +611,3 @@ def main(symbol: str, max_q: int, n_clicks: int):
 
 if __name__ == '__main__':
     app.run(debug=True)
-
-# TODO: max_q * 91 and len(incomes) mismatch
