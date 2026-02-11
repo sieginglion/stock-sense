@@ -290,46 +290,35 @@ def get_incomes_from_tokenterminal(symbol: str, q: int):
         'Cookie': '_ga=GA1.1.46309005.1766620105; _fbp=fb.1.1766620105447.33106851716235377; _gcl_au=1.1.2143769807.1766620106; intercom-id-p3bihfmm=f7640d7e-5b8d-4587-b06c-aa6f1c339bac; intercom-session-p3bihfmm=; intercom-device-id-p3bihfmm=dc4b28d8-a76b-4f46-ab88-0c17c25b10ba; _ga_TJ9TEYJ3GF=GS2.1.s1766623564$o2$g0$t1766623577$j47$l0$h0; ph_phc_amGyrGA1TpwJYYk2zNff9qfQkFBzu4uFghOgP6DjqIj_posthog=%7B%22distinct_id%22%3A%22019b52c3-8a21-7ddb-80d3-6705de899e5b%22%2C%22%24sesid%22%3A%5B1766623583834%2C%22019b52f8-41a6-7a9b-b61d-86aee0bb2210%22%2C1766623560100%5D%2C%22%24initial_person_info%22%3A%7B%22r%22%3A%22%24direct%22%2C%22u%22%3A%22https%3A%2F%2Ftokenterminal.com%2Fexplorer%2Fprojects%2Faave%2Ffinancial-statement%22%7D%7D',
     }
 
-    response = rq.get(url, params=params, headers=headers)
-    df = pd.DataFrame(response.json()[0]['result']['data'])
-
-    # Pivot
-    df = df.pivot(index='timestamp', columns='metric_id', values='value').reset_index()
-
-    # Convert timestamp
+    data = rq.get(url, params, headers=headers).json()[0]['result']['data']
+    df = (
+        pd.DataFrame(data)
+        .pivot(index='timestamp', columns='metric_id', values='value')
+        .reset_index()
+    )
     df['date'] = pd.to_datetime(df['timestamp'])
-    current_month_start = arrow.now('UTC').floor('month').datetime
-    df = df[df['date'] < current_month_start]
+    df = df[df['date'] < arrow.now('UTC').floor('month').datetime]
     if len(df) < 12:
-        raise NotSupported
-
-    # Sort
-    df = df.sort_values('date').reset_index(drop=True)
+        raise ValueError
+    df = df.sort_values('date')
 
     def get_series(col_name):
-        return df.get(col_name, pd.Series([0] * len(df)))
+        return df.get(col_name, pd.Series(0, df.index))
 
     r_raw = get_series('fees')
     earnings = get_series('earnings')
     supply = get_series('token_supply_circulating')
 
-    # Rolling TTM (12 months)
-    r_ttm = r_raw.rolling(12).sum()
-    earnings_ttm = earnings.rolling(12).sum()
+    df['eps_ttm'] = earnings.rolling(12).sum() / supply
+    df['rps_ttm'] = r_raw.rolling(12).sum() / supply
 
-    df['eps_ttm'] = earnings_ttm / supply
-    df['rps_ttm'] = r_ttm / supply
+    df = df.iloc[11:]
 
-    # Slice to requested q (months in this case)
-    # We need to make sure we have valid TTM data, so we drop the first 11 points
-
-    d = (pd.to_datetime(df['date']) + pd.DateOffset(months=1)).dt.date
+    d = (df['date'] + pd.DateOffset(months=1)).dt.date
     r = get_series('revenue')
     eps_ttm = get_series('eps_ttm')
     rps_ttm = get_series('rps_ttm')
-
-    # Fill zeros for ignored fields
-    zeros = pd.Series([0] * len(df))
+    zeros = pd.Series(0, df.index)
 
     return [
         Income(*_)
@@ -421,7 +410,7 @@ def get_prices(market: Literal['c', 't', 'u'], symbol: str, q: int):
         'UTC'
         if market == 'c'
         else 'Asia/Taipei' if market == 't' else 'America/New_York'
-    )
+    ).normalize()
     start = today - pd.Timedelta(days=len(prices) - 1)
     return pd.Series(prices, pd.date_range(start, today).date)
 
