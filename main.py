@@ -55,7 +55,16 @@ FONT = dict(
     size=14,
 )
 
-BAND_COLORS = ['#0077b6', '#0096C7', '#00b4d8', '#48CAE4', '#90E0EF', '#ADE8F4']
+BAND_COLORS = [
+    "#FFFFFF",
+    "#FF0000",
+    "#FF7F00",
+    "#FFFF00",
+    "#00FF00",
+    "#0000FF",
+    "#4B0082",
+    "#8B00FF",
+]
 BLUE = '#8eacd5'
 DARK_GREEN = '#acd58e'
 DARK_RED = '#d58eac'
@@ -425,8 +434,8 @@ def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
     log_m = np.log((prices / s).dropna())
     lo, hi = log_m.quantile(0.011), log_m.quantile(0.989)
     bands = pd.DataFrame(index=s.index)
-    for p in range(0, 120, 20):
-        m = np.exp(lo + (hi - lo) * (p / 100))
+    for p in np.linspace(0, 1, 8):
+        m = np.exp(lo + (hi - lo) * p)
         bands[m] = s * m
     future = pd.date_range(bands.index[-1] + pd.Timedelta(days=1), periods=6)
     return pd.concat([bands, pd.DataFrame([bands.iloc[-1]] * 6, future)])
