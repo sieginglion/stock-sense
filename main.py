@@ -191,6 +191,7 @@ def get_incomes_from_fmp(market: Literal['t', 'u'], symbol: str, q: int):
         date_offset = 0
         eps_col = 'epsDiluted'
     data = rq.get(url, params).json()
+
     if len(data) < 4:
         raise ValueError
     df = pd.DataFrame(data).sort_values(date_col)
@@ -198,13 +199,9 @@ def get_incomes_from_fmp(market: Literal['t', 'u'], symbol: str, q: int):
     def get_series(col_name):
         return df.get(col_name, pd.Series(0, df.index))
 
-    r_raw = get_series('revenue')
-    eps_raw = get_series(eps_col)
     shares = get_series('weightedAverageShsOutDil')
-
-    df['eps_ttm'] = eps_raw.rolling(4).sum()
-    df['rps_ttm'] = (r_raw / shares).rolling(4).sum()
-
+    df['eps_ttm'] = get_series(eps_col).rolling(4).sum()
+    df['rps_ttm'] = (get_series('revenue') / shares).rolling(4).sum()
     df = df.iloc[3:]
 
     d = (pd.to_datetime(df[date_col]) + pd.Timedelta(days=date_offset)).dt.date
