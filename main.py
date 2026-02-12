@@ -270,7 +270,7 @@ def get_incomes_from_fmp(market: Literal['t', 'u'], symbol: str, q: int):
 #     ]
 
 
-def get_incomes_from_tokenterminal(symbol: str, q: int):
+def get_incomes_from_tokenterminal(symbol: str):
     slug = SLUG_TABLE[symbol]
     url = 'https://api.tokenterminal.com/trpc/projects.getFinancialStatement'
     params = {
@@ -298,8 +298,8 @@ def get_incomes_from_tokenterminal(symbol: str, q: int):
         'x-tt-terminal-jwt': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcm9udEVuZCI6InRlcm1pbmFsIGRhc2hib2FyZCIsImlhdCI6MTc2NjUzNjU1MCwiZXhwIjoxNzY3NzQ2MTUwfQ.OzHHP4v66yYrUMoNrcQwU9rcausdKce4zQgzvjZnhIw',
         'Cookie': '_ga=GA1.1.46309005.1766620105; _fbp=fb.1.1766620105447.33106851716235377; _gcl_au=1.1.2143769807.1766620106; intercom-id-p3bihfmm=f7640d7e-5b8d-4587-b06c-aa6f1c339bac; intercom-session-p3bihfmm=; intercom-device-id-p3bihfmm=dc4b28d8-a76b-4f46-ab88-0c17c25b10ba; _ga_TJ9TEYJ3GF=GS2.1.s1766623564$o2$g0$t1766623577$j47$l0$h0; ph_phc_amGyrGA1TpwJYYk2zNff9qfQkFBzu4uFghOgP6DjqIj_posthog=%7B%22distinct_id%22%3A%22019b52c3-8a21-7ddb-80d3-6705de899e5b%22%2C%22%24sesid%22%3A%5B1766623583834%2C%22019b52f8-41a6-7a9b-b61d-86aee0bb2210%22%2C1766623560100%5D%2C%22%24initial_person_info%22%3A%7B%22r%22%3A%22%24direct%22%2C%22u%22%3A%22https%3A%2F%2Ftokenterminal.com%2Fexplorer%2Fprojects%2Faave%2Ffinancial-statement%22%7D%7D',
     }
-
     data = rq.get(url, params, headers=headers).json()[0]['result']['data']
+
     df = (
         pd.DataFrame(data)
         .pivot(index='timestamp', columns='metric_id', values='value')
@@ -314,30 +314,26 @@ def get_incomes_from_tokenterminal(symbol: str, q: int):
     def get_series(col_name):
         return df.get(col_name, pd.Series(0, df.index))
 
-    r_raw = get_series('fees')
-    earnings = get_series('earnings')
     supply = get_series('token_supply_circulating')
-
-    df['eps_ttm'] = earnings.rolling(12).sum() / supply
-    df['rps_ttm'] = r_raw.rolling(12).sum() / supply
-
+    df['eps_ttm'] = get_series('earnings').rolling(12).sum() / supply
+    df['rps_ttm'] = get_series('fees').rolling(12).sum() / supply
     df = df.iloc[11:]
 
     d = (df['date'] + pd.DateOffset(months=1)).dt.date
-    r = get_series('revenue')
+    zeros = pd.Series(0, df.index)
     eps_ttm = get_series('eps_ttm')
     rps_ttm = get_series('rps_ttm')
-    zeros = pd.Series(0, df.index)
-
     return [
         Income(*_)
-        for _ in zip(d, r, zeros, zeros, zeros, zeros, zeros, zeros, eps_ttm, rps_ttm)
+        for _ in zip(
+            d, zeros, zeros, zeros, zeros, zeros, zeros, zeros, eps_ttm, rps_ttm
+        )
     ]
 
 
 def get_incomes(market: Literal['c', 't', 'u'], symbol: str, q: int):
     return (
-        get_incomes_from_tokenterminal(symbol, q)
+        get_incomes_from_tokenterminal(symbol)
         if market == 'c'
         else get_incomes_from_fmp(market, symbol, q)
     )
@@ -432,8 +428,10 @@ def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
     )
     s[s <= 0] = None
     log_m = np.log((prices / s).dropna())
-    lo, hi = log_m.quantile(0.011), log_m.quantile(0.989)
     bands = pd.DataFrame(index=s.index)
+    if log_m.empty:
+        return bands
+    lo, hi = log_m.quantile(0.011), log_m.quantile(0.989)
     for p in np.linspace(0, 1, 8):
         m = np.exp(lo + (hi - lo) * p)
         bands[m] = s * m
