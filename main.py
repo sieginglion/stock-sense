@@ -58,13 +58,14 @@ FONT = dict(
 BAND_COLORS = [
     "#FF0000",
     "#FF0000",
-    "#FFBF00",
-    "#80FF00",
-    "#00FF40",
-    "#00FFFF",
-    "#0040FF",
-    "#8000FF",
-    "#FF00BF",
+    "#FF8800",
+    "#BBFF00",
+    "#00FF00",
+    "#00FF88",
+    "#0088FF",
+    "#0000FF",
+    "#8800FF",
+    "#FF0088",
 ]
 BLUE = '#8eacd5'
 DARK_GREEN = '#acd58e'
@@ -95,6 +96,17 @@ app.layout = html.Div(
                 dbc.Button('Plot', 'button'),
             ],
             style=dict(display='flex', marginTop=MARGIN),
+        ),
+        html.Div(
+            [
+                dcc.Markdown('', id='fmp-url'),
+            ],
+            style=dict(
+                alignItems='center',
+                display='flex',
+                marginTop='16px',
+                maxWidth='800px',
+            ),
         ),
         dcc.Graph(
             'graph',
@@ -430,7 +442,7 @@ def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
     if log_m.empty:
         return bands
     lo, hi = log_m.quantile(0.011), log_m.quantile(0.989)
-    for p in np.linspace(0, 1, 9):
+    for p in np.linspace(0, 1, 10):
         m = np.exp(lo + (hi - lo) * p)
         bands[m] = s * m
     future = pd.date_range(bands.index[-1] + pd.Timedelta(days=1), periods=6)
@@ -486,9 +498,26 @@ def create_price_frames_and_bands(
     return frames, pe_bands, ps_bands
 
 
+def get_displayed_fmp_url(market: Literal['c', 't', 'u'], symbol: str):
+    if market == 'c':
+        url = 'N/A'
+    elif market == 't':
+        url = (
+            f'https://financialmodelingprep.com/api/v3/income-statement/{add_suffix(symbol)}'
+            f'?apikey={FMP_KEY}&limit=4&period=quarter'
+        )
+    else:
+        url = (
+            'https://financialmodelingprep.com/stable/income-statement'
+            f'?apikey={FMP_KEY}&limit=4&period=quarter&symbol={symbol}'
+        )
+    return f'```\n{url}\n```'
+
+
 @callback(
     Output('graph', 'figure'),
     Output('alert', 'displayed'),
+    Output('fmp-url', 'children'),
     State('input', 'value'),
     State('q', 'value'),
     Input('button', 'n_clicks'),
@@ -497,8 +526,13 @@ def main(symbol: str, q: int, n_clicks: int):
     market = 'c' if symbol.endswith('.c') else 't' if symbol[0].isdigit() else 'u'
     if market == 'c':
         symbol = symbol[:-2]
+    fmp_url = get_displayed_fmp_url(market, symbol)
     if not (incomes := get_incomes(market, symbol, q)):
-        return go.Figure(go.Sankey(), go.Layout(paper_bgcolor=TRANSPARENT)), True
+        return (
+            go.Figure(go.Sankey(), go.Layout(paper_bgcolor=TRANSPARENT)),
+            True,
+            fmp_url,
+        )
     s_frames = create_sankey_frames(incomes, q, market)
     p_frames, pe_bands, ps_bands = create_price_frames_and_bands(
         market, symbol, incomes, q
@@ -600,7 +634,7 @@ def main(symbol: str, q: int, n_clicks: int):
             yaxis2=dict(showgrid=False, visible=False),
         )
     )
-    return fig, False
+    return fig, False, fmp_url
 
 
 if __name__ == '__main__':
