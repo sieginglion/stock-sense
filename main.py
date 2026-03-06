@@ -93,6 +93,11 @@ app.layout = html.Div(
                     value=4,
                     type='number',
                 ),
+                dcc.Checklist(
+                    id='ema7',
+                    options=[{'label': 'EMA7', 'value': 'on'}],
+                    value=['on'],
+                ),
                 dbc.Button('Plot', 'button'),
             ],
             style=dict(display='flex', marginTop=MARGIN),
@@ -189,7 +194,7 @@ class Income(NamedTuple):
 def get_incomes_from_fmp(market: Literal['t', 'u'], symbol: str, q: int):
     params = {
         'apikey': FMP_KEY,
-        'limit': q + 5,
+        'limit': q + 4,
         'period': 'quarter',
     }
     if market == 't':
@@ -417,9 +422,9 @@ def create_sankey_frames(incomes: list[Income], q: int, market: Literal['c', 't'
     return frames
 
 
-def get_prices(market: Literal['c', 't', 'u'], symbol: str, q: int):
+def get_prices(market: Literal['c', 't', 'u'], symbol: str, q: int, ema7: bool):
     prices = rq.get(
-        f'http://52.198.155.160:8080/prices?market={market}&symbol={symbol}&n={91 * q}'
+        f'http://52.198.155.160:8080/prices?market={market}&symbol={symbol}&n={91 * q}&ema7={"true" if ema7 else "false"}'
     ).json()
     today = pd.Timestamp.now(
         'UTC'
@@ -436,6 +441,8 @@ def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
         .reindex(pd.date_range(incomes[0].d, prices.index[-1]).date, method='ffill')
         .tail(len(prices))
     )
+    if metric == 'rps' and pd.isna(s.iloc[0]):
+        raise ValueError('Missing initial rps value for band calculation')
     s[s <= 0] = None
     log_m = np.log((prices / s).dropna())
     bands = pd.DataFrame(index=s.index)
@@ -450,9 +457,9 @@ def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
 
 
 def create_price_frames_and_bands(
-    market: Literal['c', 't', 'u'], symbol, incomes, q: int
+    market: Literal['c', 't', 'u'], symbol, incomes, q: int, ema7: bool
 ):
-    prices = get_prices(market, symbol, q)
+    prices = get_prices(market, symbol, q, ema7)
     dates = [e.d for e in incomes[-q * (3 if market == 'c' else 1) :]] + [
         prices.index[-1]
     ]
@@ -520,12 +527,14 @@ def get_displayed_fmp_url(market: Literal['c', 't', 'u'], symbol: str):
     Output('fmp-url', 'children'),
     State('input', 'value'),
     State('q', 'value'),
+    State('ema7', 'value'),
     Input('button', 'n_clicks'),
 )
-def main(symbol: str, q: int, n_clicks: int):
+def main(symbol: str, q: int, ema7_values: list[str], n_clicks: int):
     market = 'c' if symbol.endswith('.c') else 't' if symbol[0].isdigit() else 'u'
     if market == 'c':
         symbol = symbol[:-2]
+    use_ema7 = 'on' in ema7_values
     fmp_url = get_displayed_fmp_url(market, symbol)
     if not (incomes := get_incomes(market, symbol, q)):
         return (
@@ -535,7 +544,7 @@ def main(symbol: str, q: int, n_clicks: int):
         )
     s_frames = create_sankey_frames(incomes, q, market)
     p_frames, pe_bands, ps_bands = create_price_frames_and_bands(
-        market, symbol, incomes, q
+        market, symbol, incomes, q, use_ema7
     )
     fig = make_subplots(
         3,
