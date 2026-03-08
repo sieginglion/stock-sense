@@ -24,6 +24,7 @@ SLUG_TABLE = json.loads(os.environ['SLUG_TABLE'])
 
 CACHE = "ON_TWSE.pkl"
 URL = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
+INCOME_STATEMENTS_DIR = 'data'
 
 if os.path.isfile(CACHE):
     with open(CACHE, "rb") as f:
@@ -208,11 +209,16 @@ def get_incomes_from_fmp(market: Literal['t', 'u'], symbol: str, q: int):
         date_col = 'filingDate'
         date_offset = 0
         eps_col = 'epsDiluted'
-    data = rq.get(url, params).json()
+    local_path = os.path.join(INCOME_STATEMENTS_DIR, f'{symbol}.json')
+    if os.path.isfile(local_path):
+        with open(local_path) as f:
+            data = json.load(f)
+    else:
+        data = rq.get(url, params).json()
 
     if len(data) < 4:
         raise ValueError
-    df = pd.DataFrame(data).sort_values(date_col)
+    df = pd.DataFrame(data).sort_values(date_col).tail(q + 4).reset_index(drop=True)
 
     def get_series(col_name):
         return df.get(col_name, pd.Series(0, df.index))

@@ -1,0 +1,16 @@
+search the sec then verify the filing dates
+
+<data>
+</data>
+<text>
+</text>
+Derive the latest revenue, epsDiluted, and weightedAverageShsOutDil from the text
+Earnings is 母公司業主淨利
+If weightedAverageShsOutDil cannot be derived precisely, use the value from the previous quarter
+
+{
+    "date": <date>,
+    "revenue": <revenue>,
+    "epsdiluted": <epsdiluted>,
+    "weightedAverageShsOutDil": <weightedAverageShsOutDil>
+}
