@@ -198,16 +198,14 @@ def get_incomes_from_fmp(market: Literal['t', 'u'], symbol: str, q: int):
         'limit': q + 4,
         'period': 'quarter',
     }
+    date_col = 'date'
+    date_offset = 1
     if market == 't':
         url = f'https://financialmodelingprep.com/api/v3/income-statement/{ add_suffix(symbol) }'
-        date_col = 'date'
-        date_offset = 1
         eps_col = 'epsdiluted'
     else:
         url = 'https://financialmodelingprep.com/stable/income-statement'
         params['symbol'] = symbol
-        date_col = 'filingDate'
-        date_offset = 0
         eps_col = 'epsDiluted'
     local_path = os.path.join(INCOME_STATEMENTS_DIR, f'{symbol}.json')
     if os.path.isfile(local_path):
@@ -436,9 +434,9 @@ def get_prices(market: Literal['c', 't', 'u'], symbol: str, q: int, ema7: bool):
         'UTC'
         if market == 'c'
         else 'Asia/Taipei' if market == 't' else 'America/New_York'
-    ).normalize()
-    start = today - pd.Timedelta(days=len(prices) - 1)
-    return pd.Series(prices, pd.date_range(start, today).date)
+    ).date()
+    date_index = pd.date_range(end=today, periods=len(prices), freq='D').date
+    return pd.Series(prices, date_index)
 
 
 def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
