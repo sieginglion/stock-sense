@@ -441,7 +441,7 @@ def get_prices(market: Literal['c', 't', 'u'], symbol: str, q: int, ema7: bool):
 def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
     s = (
         pd.Series({income.d: getattr(income, metric) for income in incomes})
-        .reindex(pd.date_range(incomes[0].d, prices.index[-1]).date, 'ffill')
+        .reindex(pd.date_range(incomes[0].d, prices.index[-1]).date, method='ffill')
         .tail(len(prices))
     )
     if metric == 'rps' and pd.isna(s.iloc[0]):
