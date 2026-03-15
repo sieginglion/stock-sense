@@ -59,14 +59,13 @@ FONT = dict(
 BAND_COLORS = [
     "#FF0000",
     "#FF0000",
-    "#FF8800",
-    "#BBFF00",
-    "#00FF00",
-    "#00FF88",
-    "#0088FF",
-    "#0000FF",
-    "#8800FF",
-    "#FF0088",
+    "#FFBF00",
+    "#80FF00",
+    "#00FF40",
+    "#00FFFF",
+    "#0040FF",
+    "#8000FF",
+    "#FF00BF",
 ]
 BLUE = '#8eacd5'
 DARK_GREEN = '#acd58e'
@@ -442,19 +441,18 @@ def get_prices(market: Literal['c', 't', 'u'], symbol: str, q: int, ema7: bool):
 def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
     s = (
         pd.Series({income.d: getattr(income, metric) for income in incomes})
-        .reindex(pd.date_range(incomes[0].d, prices.index[-1]).date, method='ffill')
+        .reindex(pd.date_range(incomes[0].d, prices.index[-1]).date, 'ffill')
         .tail(len(prices))
     )
     if metric == 'rps' and pd.isna(s.iloc[0]):
         raise ValueError('Missing initial rps value for band calculation')
     s[s <= 0] = None
-    log_m = np.log((prices / s).dropna())
+    multiples = (prices / s).dropna()
     bands = pd.DataFrame(index=s.index)
-    if log_m.empty:
+    if multiples.empty:
         return bands
-    lo, hi = log_m.quantile(0.011), log_m.quantile(0.989)
-    for p in np.linspace(0, 1, 10):
-        m = np.exp(lo + (hi - lo) * p)
+    for p in np.linspace(0, 1, 9):
+        m = multiples.quantile(p)
         bands[m] = s * m
     future = pd.date_range(bands.index[-1] + pd.Timedelta(days=1), periods=6)
     return pd.concat([bands, pd.DataFrame([bands.iloc[-1]] * 6, future)])
