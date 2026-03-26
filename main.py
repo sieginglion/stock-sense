@@ -96,7 +96,7 @@ app.layout = html.Div(
                 dcc.Checklist(
                     id='ema7',
                     options=[{'label': 'EMA7', 'value': 'on'}],
-                    value=['on'],
+                    value=[],
                 ),
                 dbc.Button('Plot', 'button'),
             ],
@@ -444,8 +444,8 @@ def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
         .reindex(pd.date_range(incomes[0].d, prices.index[-1]).date, method='ffill')
         .tail(len(prices))
     )
-    if metric == 'rps' and pd.isna(s.iloc[0]):
-        raise ValueError('Missing initial rps value for band calculation')
+    if len(s) != len(prices) or (metric == 'rps' and pd.isna(s.iloc[0])):
+        raise ValueError
     s[s <= 0] = None
     multiples = (prices / s).dropna()
     bands = pd.DataFrame(index=s.index)
@@ -454,8 +454,9 @@ def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
     for p in np.linspace(0, 1, 9):
         m = multiples.quantile(p)
         bands[m] = s * m
-    future = pd.date_range(bands.index[-1] + pd.Timedelta(days=1), periods=6)
-    return pd.concat([bands, pd.DataFrame([bands.iloc[-1]] * 6, future)])
+    # future = pd.date_range(bands.index[-1] + pd.Timedelta(days=1), periods=6)
+    # return pd.concat([bands, pd.DataFrame([bands.iloc[-1]] * 6, future)])
+    return bands
 
 
 def create_price_frames_and_bands(
