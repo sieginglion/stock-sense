@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import json
 import os
@@ -12,7 +13,7 @@ import numpy as np
 import pandas as pd
 import requests as rq
 from dash import Dash, Input, Output, State, callback, dcc, html
-from FinMind.data import DataLoader
+from httpx import AsyncClient
 from plotly import graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -191,31 +192,32 @@ class Income(NamedTuple):
     rps: int
 
 
-def get_incomes_from_fmp(market: Literal['t', 'u'], symbol: str, q: int):
+async def fetch_income_statements(
+    market: Literal['t', 'u'], symbol: str, limit: int
+) -> pd.DataFrame:
     params = {
         'apikey': FMP_KEY,
-        'limit': q + 4,
+        'limit': limit,
         'period': 'quarter',
     }
-    date_col = 'date'
-    date_offset = 1
     if market == 't':
         url = f'https://financialmodelingprep.com/api/v3/income-statement/{ add_suffix(symbol) }'
-        eps_col = 'epsdiluted'
     else:
         url = 'https://financialmodelingprep.com/stable/income-statement'
         params['symbol'] = symbol
-        eps_col = 'epsDiluted'
-    local_path = os.path.join(INCOME_STATEMENTS_DIR, f'{symbol}.json')
-    if os.path.isfile(local_path):
-        with open(local_path) as f:
-            data = json.load(f)
-    else:
-        data = rq.get(url, params).json()
-
-    if len(data) < 4:
+    async with AsyncClient() as client:
+        data = (await client.get(url, params=params)).json()
+    if len(data) != limit:
         raise ValueError
-    df = pd.DataFrame(data).sort_values(date_col).tail(q + 4).reset_index(drop=True)
+    df = pd.DataFrame(data)
+    df = df.sort_values('date').reset_index(drop=True)
+    df['date'] = pd.to_datetime(df['date']) + pd.Timedelta(days=1)
+    return df
+
+
+def get_incomes_from_fmp(market: Literal['t', 'u'], symbol: str, q: int):
+    df = asyncio.run(fetch_income_statements(market, symbol, q + 4))
+    eps_col = 'epsdiluted' if market == 't' else 'epsDiluted'
 
     def get_series(col_name):
         return df.get(col_name, pd.Series(0, df.index))
@@ -225,7 +227,7 @@ def get_incomes_from_fmp(market: Literal['t', 'u'], symbol: str, q: int):
     df['rps_ttm'] = (get_series('revenue') / shares).rolling(4).sum()
     df = df.iloc[3:]
 
-    d = (pd.to_datetime(df[date_col]) + pd.Timedelta(days=date_offset)).dt.date
+    d = pd.to_datetime(df['date']).dt.date
     r = get_series('revenue')
     gp = get_series('grossProfit')
     oi = get_series('operatingIncome')
@@ -447,12 +449,12 @@ def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
     if len(s) != len(prices) or (metric == 'rps' and pd.isna(s.iloc[0])):
         raise ValueError
     s[s <= 0] = None
-    multiples = (prices / s).dropna()
+    M = (prices / s).dropna()
     bands = pd.DataFrame(index=s.index)
-    if multiples.empty:
+    if M.empty:
         return bands
     for p in np.linspace(0, 1, 9):
-        m = multiples.quantile(p)
+        m = M.quantile(p)
         bands[m] = s * m
     # future = pd.date_range(bands.index[-1] + pd.Timedelta(days=1), periods=6)
     # return pd.concat([bands, pd.DataFrame([bands.iloc[-1]] * 6, future)])
