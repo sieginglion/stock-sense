@@ -4,6 +4,7 @@ import json
 import os
 import pickle
 import subprocess
+from pathlib import Path
 from typing import Literal, NamedTuple
 
 import arrow
@@ -20,12 +21,15 @@ from plotly.subplots import make_subplots
 dotenv.load_dotenv()
 
 FMP_KEY = os.environ['FMP_KEY']
-FINMIND_KEY = os.environ['FINMIND_KEY']
-SLUG_TABLE = json.loads(os.environ['SLUG_TABLE'])
 
 CACHE = "ON_TWSE.pkl"
 URL = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
-INCOME_STATEMENTS_DIR = 'data'
+PATCH_DIR = Path('patch')
+MARKET_TO_TIMEZONE = {
+    'j': 'Asia/Tokyo',
+    't': 'Asia/Taipei',
+    'u': 'America/New_York',
+}
 
 if os.path.isfile(CACHE):
     with open(CACHE, "rb") as f:
@@ -41,10 +45,15 @@ else:
         pickle.dump(ON_TWSE, f)
 
 
-def add_suffix(symbol: str):
-    if not symbol[0].isdecimal():
-        return symbol
-    return symbol + ('.TW' if symbol in ON_TWSE else '.TWO')
+def add_suffix(market: Literal['j', 't', 'u'], symbol: str):
+    return (
+        symbol
+        + {
+            'j': '.T',
+            't': '.TW' if symbol in ON_TWSE else '.TWO',
+            'u': '',
+        }[market]
+    )
 
 
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
@@ -82,6 +91,17 @@ app.layout = html.Div(
     [
         html.Div(
             [
+                dcc.Dropdown(
+                    id='market',
+                    options=[
+                        {'label': 'j', 'value': 'j'},
+                        {'label': 't', 'value': 't'},
+                        {'label': 'u', 'value': 'u'},
+                    ],
+                    value='t',
+                    clearable=False,
+                    style=dict(width='70px', marginRight=MARGIN),
+                ),
                 dbc.Input(
                     'input',
                     dict(textAlign='center', width='140px', marginRight=MARGIN),
@@ -193,31 +213,37 @@ class Income(NamedTuple):
 
 
 async def fetch_income_statements(
-    market: Literal['t', 'u'], symbol: str, limit: int
+    market: Literal['j', 't', 'u'], symbol: str, limit: int
 ) -> pd.DataFrame:
     params = {
         'apikey': FMP_KEY,
         'limit': limit,
         'period': 'quarter',
     }
-    if market == 't':
-        url = f'https://financialmodelingprep.com/api/v3/income-statement/{ add_suffix(symbol) }'
-    else:
+    if market == 'u':
         url = 'https://financialmodelingprep.com/stable/income-statement'
         params['symbol'] = symbol
+    else:
+        url = f'https://financialmodelingprep.com/api/v3/income-statement/{ add_suffix(market, symbol) }'
     async with AsyncClient() as client:
         data = (await client.get(url, params=params)).json()
+    path = PATCH_DIR / f'{symbol}.json'
+    if path.exists():
+        with path.open() as f:
+            patch = json.load(f)
+        data = sorted(
+            {r['date']: r for r in data + patch}.values(),
+            key=lambda r: r['date'],
+            reverse=True,
+        )[:limit]
     if len(data) != limit:
         raise ValueError
-    df = pd.DataFrame(data)
-    df = df.sort_values('date').reset_index(drop=True)
-    df['date'] = pd.to_datetime(df['date']) + pd.Timedelta(days=1)
-    return df
+    return pd.DataFrame(data).sort_values('date').reset_index(drop=True)
 
 
-def get_incomes_from_fmp(market: Literal['t', 'u'], symbol: str, q: int):
+def get_incomes_from_fmp(market: Literal['j', 't', 'u'], symbol: str, q: int):
     df = asyncio.run(fetch_income_statements(market, symbol, q + 4))
-    eps_col = 'epsdiluted' if market == 't' else 'epsDiluted'
+    eps_col = 'epsDiluted' if market == 'u' else 'epsdiluted'
 
     def get_series(col_name):
         return df.get(col_name, pd.Series(0, df.index))
@@ -227,7 +253,7 @@ def get_incomes_from_fmp(market: Literal['t', 'u'], symbol: str, q: int):
     df['rps_ttm'] = (get_series('revenue') / shares).rolling(4).sum()
     df = df.iloc[3:]
 
-    d = pd.to_datetime(df['date']).dt.date
+    d = (pd.to_datetime(df['date']) + pd.Timedelta(days=1)).dt.date
     r = get_series('revenue')
     gp = get_series('grossProfit')
     oi = get_series('operatingIncome')
@@ -290,77 +316,73 @@ def get_incomes_from_fmp(market: Literal['t', 'u'], symbol: str, q: int):
 #     ]
 
 
-def get_incomes_from_tokenterminal(symbol: str):
-    slug = SLUG_TABLE[symbol]
-    url = 'https://api.tokenterminal.com/trpc/projects.getFinancialStatement'
-    params = {
-        'batch': '1',
-        'input': json.dumps({'0': {'project_slug': slug, 'granularity': 'month'}}),
-    }
-    headers = {
-        'accept': '*/*',
-        'accept-language': 'en-US,en;q=0.9',
-        'authorization': 'Bearer c0e5035a-64f6-4d2c-b5f6-ac1d1cb3da2f',
-        'cache-control': 'no-cache',
-        'content-type': 'application/json',
-        'origin': 'https://tokenterminal.com',
-        'pragma': 'no-cache',
-        'priority': 'u=1, i',
-        'referer': f'https://tokenterminal.com/explorer/projects/{slug}/financial-statement',
-        'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"macOS"',
-        'sec-fetch-dest': 'empty',
-        'sec-fetch-mode': 'cors',
-        'sec-fetch-site': 'same-site',
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
-        'x-app-path': f'/explorer/projects/{slug}/financial-statement',
-        'x-tt-terminal-jwt': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcm9udEVuZCI6InRlcm1pbmFsIGRhc2hib2FyZCIsImlhdCI6MTc2NjUzNjU1MCwiZXhwIjoxNzY3NzQ2MTUwfQ.OzHHP4v66yYrUMoNrcQwU9rcausdKce4zQgzvjZnhIw',
-        'Cookie': '_ga=GA1.1.46309005.1766620105; _fbp=fb.1.1766620105447.33106851716235377; _gcl_au=1.1.2143769807.1766620106; intercom-id-p3bihfmm=f7640d7e-5b8d-4587-b06c-aa6f1c339bac; intercom-session-p3bihfmm=; intercom-device-id-p3bihfmm=dc4b28d8-a76b-4f46-ab88-0c17c25b10ba; _ga_TJ9TEYJ3GF=GS2.1.s1766623564$o2$g0$t1766623577$j47$l0$h0; ph_phc_amGyrGA1TpwJYYk2zNff9qfQkFBzu4uFghOgP6DjqIj_posthog=%7B%22distinct_id%22%3A%22019b52c3-8a21-7ddb-80d3-6705de899e5b%22%2C%22%24sesid%22%3A%5B1766623583834%2C%22019b52f8-41a6-7a9b-b61d-86aee0bb2210%22%2C1766623560100%5D%2C%22%24initial_person_info%22%3A%7B%22r%22%3A%22%24direct%22%2C%22u%22%3A%22https%3A%2F%2Ftokenterminal.com%2Fexplorer%2Fprojects%2Faave%2Ffinancial-statement%22%7D%7D',
-    }
-    data = rq.get(url, params, headers=headers).json()[0]['result']['data']
+# def get_incomes_from_tokenterminal(symbol: str):
+#     slug = SLUG_TABLE[symbol]
+#     url = 'https://api.tokenterminal.com/trpc/projects.getFinancialStatement'
+#     params = {
+#         'batch': '1',
+#         'input': json.dumps({'0': {'project_slug': slug, 'granularity': 'month'}}),
+#     }
+#     headers = {
+#         'accept': '*/*',
+#         'accept-language': 'en-US,en;q=0.9',
+#         'authorization': 'Bearer c0e5035a-64f6-4d2c-b5f6-ac1d1cb3da2f',
+#         'cache-control': 'no-cache',
+#         'content-type': 'application/json',
+#         'origin': 'https://tokenterminal.com',
+#         'pragma': 'no-cache',
+#         'priority': 'u=1, i',
+#         'referer': f'https://tokenterminal.com/explorer/projects/{slug}/financial-statement',
+#         'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+#         'sec-ch-ua-mobile': '?0',
+#         'sec-ch-ua-platform': '"macOS"',
+#         'sec-fetch-dest': 'empty',
+#         'sec-fetch-mode': 'cors',
+#         'sec-fetch-site': 'same-site',
+#         'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+#         'x-app-path': f'/explorer/projects/{slug}/financial-statement',
+#         'x-tt-terminal-jwt': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcm9udEVuZCI6InRlcm1pbmFsIGRhc2hib2FyZCIsImlhdCI6MTc2NjUzNjU1MCwiZXhwIjoxNzY3NzQ2MTUwfQ.OzHHP4v66yYrUMoNrcQwU9rcausdKce4zQgzvjZnhIw',
+#         'Cookie': '_ga=GA1.1.46309005.1766620105; _fbp=fb.1.1766620105447.33106851716235377; _gcl_au=1.1.2143769807.1766620106; intercom-id-p3bihfmm=f7640d7e-5b8d-4587-b06c-aa6f1c339bac; intercom-session-p3bihfmm=; intercom-device-id-p3bihfmm=dc4b28d8-a76b-4f46-ab88-0c17c25b10ba; _ga_TJ9TEYJ3GF=GS2.1.s1766623564$o2$g0$t1766623577$j47$l0$h0; ph_phc_amGyrGA1TpwJYYk2zNff9qfQkFBzu4uFghOgP6DjqIj_posthog=%7B%22distinct_id%22%3A%22019b52c3-8a21-7ddb-80d3-6705de899e5b%22%2C%22%24sesid%22%3A%5B1766623583834%2C%22019b52f8-41a6-7a9b-b61d-86aee0bb2210%22%2C1766623560100%5D%2C%22%24initial_person_info%22%3A%7B%22r%22%3A%22%24direct%22%2C%22u%22%3A%22https%3A%2F%2Ftokenterminal.com%2Fexplorer%2Fprojects%2Faave%2Ffinancial-statement%22%7D%7D',
+#     }
+#     data = rq.get(url, params, headers=headers).json()[0]['result']['data']
 
-    df = (
-        pd.DataFrame(data)
-        .pivot(index='timestamp', columns='metric_id', values='value')
-        .reset_index()
-    )
-    df['date'] = pd.to_datetime(df['timestamp'])
-    df = df[df['date'] < arrow.now('UTC').floor('month').datetime]
-    if len(df) < 12:
-        raise ValueError
-    df = df.sort_values('date')
+#     df = (
+#         pd.DataFrame(data)
+#         .pivot(index='timestamp', columns='metric_id', values='value')
+#         .reset_index()
+#     )
+#     df['date'] = pd.to_datetime(df['timestamp'])
+#     df = df[df['date'] < arrow.now('UTC').floor('month').datetime]
+#     if len(df) < 12:
+#         raise ValueError
+#     df = df.sort_values('date')
 
-    def get_series(col_name):
-        return df.get(col_name, pd.Series(0, df.index))
+#     def get_series(col_name):
+#         return df.get(col_name, pd.Series(0, df.index))
 
-    supply = get_series('token_supply_circulating')
-    df['eps_ttm'] = get_series('earnings').rolling(12).sum() / supply
-    df['rps_ttm'] = get_series('fees').rolling(12).sum() / supply
-    df = df.iloc[11:]
+#     supply = get_series('token_supply_circulating')
+#     df['eps_ttm'] = get_series('earnings').rolling(12).sum() / supply
+#     df['rps_ttm'] = get_series('fees').rolling(12).sum() / supply
+#     df = df.iloc[11:]
 
-    d = (df['date'] + pd.DateOffset(months=1)).dt.date
-    zeros = pd.Series(0, df.index)
-    eps_ttm = get_series('eps_ttm')
-    rps_ttm = get_series('rps_ttm')
-    return [
-        Income(*_)
-        for _ in zip(
-            d, zeros, zeros, zeros, zeros, zeros, zeros, zeros, eps_ttm, rps_ttm
-        )
-    ]
-
-
-def get_incomes(market: Literal['c', 't', 'u'], symbol: str, q: int):
-    return (
-        get_incomes_from_tokenterminal(symbol)
-        if market == 'c'
-        else get_incomes_from_fmp(market, symbol, q)
-    )
+#     d = (df['date'] + pd.DateOffset(months=1)).dt.date
+#     zeros = pd.Series(0, df.index)
+#     eps_ttm = get_series('eps_ttm')
+#     rps_ttm = get_series('rps_ttm')
+#     return [
+#         Income(*_)
+#         for _ in zip(
+#             d, zeros, zeros, zeros, zeros, zeros, zeros, zeros, eps_ttm, rps_ttm
+#         )
+#     ]
 
 
-def create_sankey_frames(incomes: list[Income], q: int, market: Literal['c', 't', 'u']):
-    incomes = incomes[-q * (3 if market == 'c' else 1) :]
+def get_incomes(market: Literal['j', 't', 'u'], symbol: str, q: int):
+    return get_incomes_from_fmp(market, symbol, q)
+
+
+def create_sankey_frames(incomes: list[Income], q: int):
+    incomes = incomes[-q:]
     max_r = max(e.r for e in incomes)
     frames = [
         go.Sankey(
@@ -427,15 +449,11 @@ def create_sankey_frames(incomes: list[Income], q: int, market: Literal['c', 't'
     return frames
 
 
-def get_prices(market: Literal['c', 't', 'u'], symbol: str, q: int, ema7: bool):
+def get_prices(market: Literal['j', 't', 'u'], symbol: str, q: int, ema7: bool):
     prices = rq.get(
-        f'http://52.198.155.160:8080/prices?market={market}&symbol={symbol}&n={91 * q}&ema7={"true" if ema7 else "false"}'
+        f'http://localhost:8080/prices?market={market}&symbol={symbol}&n={91 * q}&ema7={"true" if ema7 else "false"}'
     ).json()
-    today = pd.Timestamp.now(
-        'UTC'
-        if market == 'c'
-        else 'Asia/Taipei' if market == 't' else 'America/New_York'
-    ).date()
+    today = pd.Timestamp.now(MARKET_TO_TIMEZONE[market]).date()
     date_index = pd.date_range(end=today, periods=len(prices), freq='D').date
     return pd.Series(prices, date_index)
 
@@ -462,12 +480,10 @@ def calc_bands(incomes: list[Income], prices: pd.Series, metric: str):
 
 
 def create_price_frames_and_bands(
-    market: Literal['c', 't', 'u'], symbol, incomes, q: int, ema7: bool
+    market: Literal['j', 't', 'u'], symbol, incomes, q: int, ema7: bool
 ):
     prices = get_prices(market, symbol, q, ema7)
-    dates = [e.d for e in incomes[-q * (3 if market == 'c' else 1) :]] + [
-        prices.index[-1]
-    ]
+    dates = [e.d for e in incomes[-q:]] + [prices.index[-1]]
     frames = [
         go.Scatter(
             hoverlabel=dict(
@@ -510,12 +526,10 @@ def create_price_frames_and_bands(
     return frames, pe_bands, ps_bands
 
 
-def get_displayed_fmp_url(market: Literal['c', 't', 'u'], symbol: str):
-    if market == 'c':
-        url = 'N/A'
-    elif market == 't':
+def get_displayed_fmp_url(market: Literal['j', 't', 'u'], symbol: str):
+    if market in ('j', 't'):
         url = (
-            f'https://financialmodelingprep.com/api/v3/income-statement/{add_suffix(symbol)}'
+            f'https://financialmodelingprep.com/api/v3/income-statement/{add_suffix(market, symbol)}'
             f'?apikey={FMP_KEY}&limit=4&period=quarter'
         )
     else:
@@ -530,15 +544,19 @@ def get_displayed_fmp_url(market: Literal['c', 't', 'u'], symbol: str):
     Output('graph', 'figure'),
     Output('alert', 'displayed'),
     Output('fmp-url', 'children'),
+    State('market', 'value'),
     State('input', 'value'),
     State('q', 'value'),
     State('ema7', 'value'),
     Input('button', 'n_clicks'),
 )
-def main(symbol: str, q: int, ema7_values: list[str], n_clicks: int):
-    market = 'c' if symbol.endswith('.c') else 't' if symbol[0].isdigit() else 'u'
-    if market == 'c':
-        symbol = symbol[:-2]
+def main(
+    market: Literal['j', 't', 'u'],
+    symbol: str,
+    q: int,
+    ema7_values: list[str],
+    n_clicks: int,
+):
     use_ema7 = 'on' in ema7_values
     fmp_url = get_displayed_fmp_url(market, symbol)
     if not (incomes := get_incomes(market, symbol, q)):
@@ -547,7 +565,7 @@ def main(symbol: str, q: int, ema7_values: list[str], n_clicks: int):
             True,
             fmp_url,
         )
-    s_frames = create_sankey_frames(incomes, q, market)
+    s_frames = create_sankey_frames(incomes, q)
     p_frames, pe_bands, ps_bands = create_price_frames_and_bands(
         market, symbol, incomes, q, use_ema7
     )

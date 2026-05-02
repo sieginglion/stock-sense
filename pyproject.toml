@@ -17,6 +17,7 @@ python-dotenv = "^1.0.0"
 requests = "^2.31.0"
 finmind = "^1.9.2"
 pydantic = "<2.0.0"
+httpx = "^0.28.1"
 
 [tool.poetry.group.dev.dependencies]
 ipython = "^8.17.2"
